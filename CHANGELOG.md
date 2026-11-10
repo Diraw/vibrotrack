@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1 — 2026-11-11
+
+- Boundary proposal now detects a low-temporal-std frozen-particle/static ring: the
+  green `interior_mask.png` stops inside the ring, and `mask_overlay.png` draws the
+  detected outer ring in orange.
+- Added `outer_radius_px`, `ring_detected`, `ring_inner_radius_px`, `active_std` and
+  `std_threshold` to `mask.json`.
+- `--margin-px` is now an inward margin from the detected boundary (negative values
+  expand outward). For frozen-ring recordings, use extraction with
+  `--wall-band 0 --wall-model off`.
+- Synthetic frozen-ring test added.
+
 ## 0.2.0 — 2026-11-11
 
 - New `vibrotrack mask` command: proposes a boundary mask from the recording, writes

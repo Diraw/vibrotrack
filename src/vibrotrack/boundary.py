@@ -44,18 +44,34 @@ def _sample_indices(n, k):
 
 
 def _probe(files, indices, levels):
+    """Return (temporal maximum, temporal std) over the sampled frames.
+
+    The maximum recovers the filled interior.  The standard deviation separates
+    moving particles (high std) from a frozen-particle ring / static wall (low std).
+    """
     probe = None
+    total = None
+    total_sq = None
+    n = 0
     for i in indices:
         a = X.read_image(files[int(i)], levels)
         if a.ndim != 2:
             raise ValueError('boundary proposal needs single-channel frames, got shape %r' % (a.shape,))
+        a = a.astype(np.float32)
         if probe is None:
             probe = a.copy()
+            total = a.copy()
+            total_sq = a * a
         else:
             np.maximum(probe, a, out=probe)
-    if probe is None:
+            total += a
+            total_sq += a * a
+        n += 1
+    if probe is None or n == 0:
         raise ValueError('no readable frames')
-    return probe
+    mean = total / n
+    var = total_sq / n - mean * mean
+    return probe.astype(np.uint8), np.sqrt(np.maximum(var, 0.0)).astype(np.float32)
 
 
 def _otsu(probe, threshold=None):
@@ -142,6 +158,52 @@ def _hull(contour):
     return cv2.convexHull(contour)
 
 
+def _static_ring_inner_radius(std, center, outer_radius):
+    """Find the inner edge of a frozen-particle ring, if one is present.
+
+    A frozen ring has high mean brightness but low temporal std, while the active
+    interior has high std.  Scan the radial std profile from the outer circle inward
+    and find where it rises above a fraction of the interior level.
+
+    Returns ``(radius, detected, profile_info)``.  When no clear drop is found,
+    ``radius`` is the outer radius and ``detected`` is False.
+    """
+    h, w = std.shape
+    yy, xx = np.indices(std.shape)
+    r = np.hypot(xx - center[0], yy - center[1])
+    hi = int(max(20, min(outer_radius, min(h, w) / 2.0 - 1)))
+    lo = int(max(8, 0.45 * hi))
+    bins = np.arange(0, hi + 2)
+    idx = np.clip(r.astype(np.int32), 0, len(bins) - 2)
+    counts = np.bincount(idx.ravel(), minlength=len(bins))[:-1]
+    sums = np.bincount(idx.ravel(), weights=std.ravel(), minlength=len(bins))[:-1]
+    prof = sums / np.maximum(counts, 1)
+    interior = prof[int(0.45 * hi):int(0.80 * hi)]
+    active_level = float(np.median(interior)) if len(interior) else 0.0
+    if active_level < 3.0:
+        return float(outer_radius), False, {
+            'active_std': active_level, 'std_threshold': None,
+            'ring_inner_radius_px': None,
+        }
+    threshold = max(2.0, 0.25 * active_level)
+    # From the outer edge inward: the first bin above threshold is the last
+    # moving-particle radius.  It is the inner edge of the frozen ring.
+    transition = None
+    for i in range(hi, lo, -1):
+        if prof[i] > threshold:
+            transition = i
+            break
+    if transition is None or transition >= 0.97 * hi:
+        return float(outer_radius), False, {
+            'active_std': active_level, 'std_threshold': threshold,
+            'ring_inner_radius_px': None,
+        }
+    return float(transition), True, {
+        'active_std': active_level, 'std_threshold': threshold,
+        'ring_inner_radius_px': float(transition),
+    }
+
+
 def _circle_mask(shape, cx, cy, radius, margin):
     h, w = shape
     mask = np.zeros((h, w), np.uint8)
@@ -154,14 +216,17 @@ def _polygon_mask(shape, hull, margin):
     h, w = shape
     mask = np.zeros((h, w), np.uint8)
     cv2.fillPoly(mask, [np.asarray(hull, dtype=np.int32)], 255)
-    if margin > 0:
-        k = 2 * int(math.ceil(margin)) + 1
-        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    # Positive margin shrinks the mask inward (away from a frozen ring/wall);
+    # a negative margin expands it for a deliberately generous search region.
+    if margin:
+        k = 2 * int(math.ceil(abs(margin))) + 1
+        op = cv2.erode if margin > 0 else cv2.dilate
+        mask = op(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
     return mask
 
 
-def _overlay(frame, mask, *, shape, center=None, radius=None, hull=None,
-             label='proposed mask'):
+def _overlay(frame, mask, *, shape, center=None, radius=None, outer_radius=None,
+             ring_detected=False, hull=None, label='proposed mask'):
     rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
     inside = mask > 0
     green = np.zeros_like(rgb)
@@ -170,11 +235,16 @@ def _overlay(frame, mask, *, shape, center=None, radius=None, hull=None,
     if shape == 'circle' and center is not None and radius is not None:
         cv2.circle(rgb, (int(round(center[0])), int(round(center[1]))),
                    int(round(radius)), (0, 255, 0), 4)
+        if ring_detected and outer_radius is not None and outer_radius > radius + 1:
+            cv2.circle(rgb, (int(round(center[0])), int(round(center[1]))),
+                       int(round(outer_radius)), (0, 165, 255), 3)
     elif hull is not None:
         cv2.polylines(rgb, [np.asarray(hull, np.int32)], True, (0, 255, 0), 4)
     text = '%s  %s' % (label, shape)
     if shape == 'circle' and center is not None and radius is not None:
-        text += '  c=(%.1f, %.1f)  r=%.1f px' % (center[0], center[1], radius)
+        text += '  c=(%.1f, %.1f)  mask r=%.1f' % (center[0], center[1], radius)
+        if ring_detected and outer_radius is not None:
+            text += '  outer/frozen ring r=%.1f' % outer_radius
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
     cv2.rectangle(rgb, (18, 18), (28 + tw, 28 + th + 18), (0, 0, 0), -1)
     cv2.putText(rgb, text, (24, 24 + th), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
@@ -189,7 +259,7 @@ def propose(files, *, levels=(128.0, 28224.0), n_frames=DEFAULT_FRAMES,
     if not files:
         raise ValueError('no frames supplied')
     indices = _sample_indices(len(files), n_frames)
-    probe = _probe(files, indices, levels)
+    probe, std = _probe(files, indices, levels)
     h, w = probe.shape
     shape = str(shape or 'auto').lower()
     if shape not in ('auto', 'circle', 'polygon'):
@@ -223,12 +293,21 @@ def propose(files, *, levels=(128.0, 28224.0), n_frames=DEFAULT_FRAMES,
     if method in ('contour_circle', 'contour_polygon'):
         threshold_used, _ = _otsu(probe, threshold)
 
+    outer_radius = None
+    ring_detected = False
+    ring_info = {}
     if shape == 'circle':
-        mask = _circle_mask((h, w), cx, cy, r, float(margin_px))
+        outer_radius = float(r)
+        ring_radius, ring_detected, ring_info = _static_ring_inner_radius(
+            std, (cx, cy), outer_radius)
+        boundary_radius = ring_radius if ring_detected else outer_radius
+        radius = max(1.0, boundary_radius - float(margin_px))
+        mask = _circle_mask((h, w), cx, cy, radius, 0.0)
         info_shape = 'circle'
         center = [float(cx), float(cy)]
         hull = None
-        radius = float(r + margin_px)
+        if ring_detected:
+            method += '+static_ring'
     else:
         if contour is None:
             _, contour = _contour_circle(probe, threshold)
@@ -237,12 +316,14 @@ def propose(files, *, levels=(128.0, 28224.0), n_frames=DEFAULT_FRAMES,
         info_shape = 'polygon'
         center = [float(cx), float(cy)]
         radius = None
+        ring_info = {}
 
     preview_idx = indices[len(indices) // 2] if preview_frame is None else int(preview_frame)
     preview_idx = max(0, min(len(files) - 1, preview_idx))
     preview = X.read_image(files[preview_idx], levels)
     overlay = _overlay(preview, mask, shape=info_shape, center=center,
-                       radius=radius, hull=hull)
+                       radius=radius, outer_radius=outer_radius,
+                       ring_detected=ring_detected, hull=hull)
     info = {
         'schema': SCHEMA,
         'status': 'proposed',
@@ -251,8 +332,11 @@ def propose(files, *, levels=(128.0, 28224.0), n_frames=DEFAULT_FRAMES,
         'shape': info_shape,
         'center_px': center,
         'radius_px': radius,
+        'outer_radius_px': outer_radius,
+        'ring_detected': bool(ring_detected),
         'margin_px': float(margin_px),
         'threshold': threshold_used,
+        **ring_info,
         'image_shape': [int(h), int(w)],
         'frame_count': int(len(files)),
         'sample_indices': [int(i) for i in indices],

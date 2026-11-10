@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.2.0"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.2.1"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -214,9 +214,11 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 ```
 
 - 白（>0）= 检测区域，黑 = 不检测。
-- 圆形容器：默认 `--shape auto` 走 Hough 圆；`--margin-px 2` 左右，避免贴壁颗粒中心被切掉。
+- 圆形容器：默认 `--shape auto` 走 Hough 圆；`--margin-px 2` 表示从检测到的边界向**内**收 2 px；负值才向外扩。
 - 六角/矩形：`--shape polygon`，用前景外轮廓的凸包。
-- `mask.json` 的 `status` 是 `proposed`；overlay 里绿色区域盖住容器内部、没有大片漏检，才算确认。
+- **冻结颗粒 + 圆环**：工具用时间维 std 找外圈静态区；overlay 里绿色 mask 停在冻结环内侧，橙色圈标出外圈。
+  这种数据提取时建议加 `--wall-band 0 --wall-model off`，不要把冻结环当可动颗粒搜进来。
+- `mask.json` 的 `status` 是 `proposed`；overlay 里绿色区域盖住活动区、没有大片漏检，才算确认。
 - 自动提议失败或光照很不均匀时，仍可手工画 mask：圆形容器画内部圆盘，半径取亮环内缘再减 5–10 px；矩形 ROI 可以把壁面画黑。
 - mask 尺寸必须与帧一致；不一致会直接报错，不会静默裁剪。
 
@@ -225,7 +227,7 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
 CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.2）
+## 已知限制（v0.2.1）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。
@@ -235,6 +237,8 @@ CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 worke
 - `mask` 的自动提议假设容器大致居中、内部比外部亮；严重不均匀照明、容器贴边或
   非凸边界仍应人工画 mask。Hough 也可能把密集颗粒的某一圈误认成容器，所以 overlay
   确认是流程的一部分，不是可选项。
+- 冻结环检测基于“活动区 temporal std 高、冻结区 std 低”。如果冻结环也在缓慢蠕动，
+  或活动区本身几乎不动，std 对比会变弱；这时看 `ring_detected`，必要时手工画 mask。
 - 没有 GUI；批处理请用 CLI 或 Python API。
 
 ## 开发与测试

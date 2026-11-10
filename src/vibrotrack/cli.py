@@ -87,8 +87,11 @@ def _cmd_mask(args):
     print('proposed: %s' % info['shape'])
     if info.get('radius_px') is not None:
         print('center:   [%.2f, %.2f]' % tuple(info['center_px']))
-        print('radius:   %.2f px (includes %.2f px margin)'
+        print('radius:   %.2f px (after %.2f px inward margin)'
               % (info['radius_px'], info['margin_px']))
+        if info.get('ring_detected'):
+            print('ring:     static/frozen ring detected; outer r=%.2f px, mask stops inside'
+                  % info['outer_radius_px'])
     print('mask:     %s' % mask_path)
     print('overlay:  %s' % overlay_path)
     print('meta:     %s' % json_path)
