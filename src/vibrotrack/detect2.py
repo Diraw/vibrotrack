@@ -84,7 +84,7 @@ def _fit_free(strength, rr, min_strength=20, tol=2.7):
         w = valid.astype(float)
         lhs = np.einsum('ni,ij,ik->njk', w, A, A) + np.eye(3)[None] * 1e-5
         rhs = np.einsum('ni,ni,ij->nj', w, rr, A)
-        coef = np.linalg.solve(lhs, rhs)
+        coef = np.linalg.solve(lhs, rhs[..., None])[..., 0]
         resid = rr - coef @ A.T
         valid = (strength > min_strength) & (np.abs(resid) < tol)
     ns = valid.sum(1)

@@ -124,7 +124,7 @@ def detect(im,mask,dist=None,bbox=None):
         w=valid.astype(float)
         lhs=np.einsum('ni,ij,ik->njk',w,A,A)+np.eye(3)[None]*1e-5
         rhs=np.einsum('ni,ni,ij->nj',w,rr,A)
-        coef=np.linalg.solve(lhs,rhs)
+        coef=np.linalg.solve(lhs,rhs[...,None])[...,0]
         resid=rr-coef@A.T
         valid=(strength>20)&(np.abs(resid)<2.7)
     ns=valid.sum(1); rmse=np.sqrt((resid**2*valid).sum(1)/np.maximum(ns,1))
