@@ -187,8 +187,8 @@ CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 worke
 
 ## 已知限制（v0.1）
 
-- 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用私有仓的
-  a separate legacy extractor，不在本包内。
+- 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
+  不在本包内。
 - 检测器假设“亮圆盘 + 暗标记”；其他外观需要新增 detector profile。
 - `boundary.model=auto` 只在 mask 同目录存在 `wall_disks.npy` 时走几何壁分支；
   没有就退回经验方差分支。
