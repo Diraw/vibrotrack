@@ -13,7 +13,7 @@ boundary mask.
 ## 它做什么
 
 ```text
-TIFF frames + apparatus.yaml + boundary mask
+TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
         │
         ▼
    detect (v1/v2)  →  link (v1/v2)  →  chunk_*.npz
@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.1.1"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.2.0"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -45,9 +45,9 @@ python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@
 
 ```text
 my_project/
-  frames/                  # 16-bit TIFF（.tiff/.tif），文件名按帧号排序
-  masks/interior_mask.png  # 圆形/矩形内部区域，白=可检测；没有就省略
+  frames/                  # 8-bit 或 16-bit TIFF（.tiff/.tif），文件名按帧号排序
   apparatus.yaml           # 复制 examples/apparatus.example.yaml 后修改
+  masks/                   # 可选：自动生成，确认后再用
 ```
 
 `apparatus.yaml` 最少要改：
@@ -59,20 +59,45 @@ particle:
   diameter_mm: 14.0
   nominal_n: 485
 boundary:
-  mask: masks/interior_mask.png
+  mask: masks/case01/interior_mask.png
 ```
 
 `px_per_mm` 必须来自标尺/CAD/已知尺寸，并在 `calibration.source` 写清来源。**不要**
 用检测出的颗粒半径反推 ppm 再声称是计量结果。
 
-### 2. 提取一个 case
+### 2. 自动生成边界 mask，先人工确认
+
+```bash
+vibrotrack mask \
+  --raw frames \
+  --out masks/case01 \
+  --config apparatus.yaml \
+  --frames 12
+```
+
+它会从整段录像中抽若干帧，自动寻找容器边界，写出三个文件：
+
+```text
+masks/case01/interior_mask.png   白=检测区域，黑=不检测
+masks/case01/mask_overlay.png    真图 + 半透明绿色 mask；人工看这张
+masks/case01/mask.json           方法、中心/半径、参数、哈希、status=proposed
+```
+
+先看 `mask_overlay.png`：绿色区域是否完整覆盖容器内部、是否把边界外区域也包进来。
+确认后再把 `interior_mask.png` 传给 `extract --mask`。自动检测不是最终裁决，
+`mask.json` 里的 `status` 保持 `proposed`，直到人工确认。圆形容器默认走 Hough，
+六角/矩形可以改用 `--shape polygon`。旧 mask 仍然可以用，自动生成不是强制的。
+详见 [`docs/MASK.md`](docs/MASK.md)。
+
+### 3. 提取一个 case
 
 ```bash
 vibrotrack extract \
   --raw frames \
   --out batch \
   --config apparatus.yaml \
-  --case-id case01
+  --case-id case01 \
+  --mask masks/case01/interior_mask.png
 ```
 
 产物在 `batch/sequences/case01/`：
@@ -85,7 +110,7 @@ full_summary.json       帧数、检出中位数、有效率、链接率
 dataset.json            自描述元数据（fps、px/mm、mask 哈希、文件哈希）
 ```
 
-### 3. 几何产品
+### 4. 几何产品
 
 ```bash
 vibrotrack geometry \
@@ -98,7 +123,7 @@ vibrotrack geometry \
 质心或颗粒位置中位数出发，再由外缘包络拟合修正。`envelope_resid_rms_px > 30` 时
 `geometry_warning` 会提示拟合不可靠。
 
-### 4. 批次门禁
+### 5. 批次门禁
 
 ```bash
 vibrotrack index  --batch-dir batch
@@ -110,7 +135,7 @@ vibrotrack verify --batch-dir batch
 帧数覆盖和 npz 哈希；`verify` 重新计算所有产品哈希。只有 `verify` 通过的数据才建议
 进入定量分析。
 
-### 5. 冻结归档
+### 6. 冻结归档
 
 ```bash
 vibrotrack archive --batch-dir batch --archive-root archive
@@ -153,6 +178,11 @@ vibrotrack archive --batch-dir batch --archive-root archive
 `dataset.json` 是单个 case 的身份证；`index.json` 汇总一个批次并记录每个文件的
 sha256；`acceptance.json` 是门禁报告。字段见 [`docs/SCHEMA.md`](docs/SCHEMA.md)。
 
+### `mask.json`
+
+`vibrotrack mask` 的提议元数据：`status=proposed`、方法、中心/半径、采样帧、
+mask/overlay 的 sha256。字段见 [`docs/MASK.md`](docs/MASK.md)。
+
 ## 配置参考
 
 | 键 | 默认 | 说明 |
@@ -175,9 +205,19 @@ sha256；`acceptance.json` 是门禁报告。字段见 [`docs/SCHEMA.md`](docs/S
 
 ## 边界 mask 怎么做
 
+优先让工具生成提议，再人工看 overlay 确认：
+
+```bash
+vibrotrack mask --raw frames --out masks/case01 --config apparatus.yaml
+# 看 masks/case01/mask_overlay.png
+vibrotrack extract ... --mask masks/case01/interior_mask.png
+```
+
 - 白（>0）= 检测区域，黑 = 不检测。
-- 圆形容器：画**内部圆盘**，不要画冻结颗粒环；半径取亮环内缘再减 5–10 px。
-- 矩形/方形 ROI：可以不传 mask（全帧），或把壁面画黑。
+- 圆形容器：默认 `--shape auto` 走 Hough 圆；`--margin-px 2` 左右，避免贴壁颗粒中心被切掉。
+- 六角/矩形：`--shape polygon`，用前景外轮廓的凸包。
+- `mask.json` 的 `status` 是 `proposed`；overlay 里绿色区域盖住容器内部、没有大片漏检，才算确认。
+- 自动提议失败或光照很不均匀时，仍可手工画 mask：圆形容器画内部圆盘，半径取亮环内缘再减 5–10 px；矩形 ROI 可以把壁面画黑。
 - mask 尺寸必须与帧一致；不一致会直接报错，不会静默裁剪。
 
 ## 性能
@@ -185,13 +225,16 @@ sha256；`acceptance.json` 是门禁报告。字段见 [`docs/SCHEMA.md`](docs/S
 原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
 CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.1）
+## 已知限制（v0.2）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。
 - 检测器假设“亮圆盘 + 暗标记”；其他外观需要新增 detector profile。
 - `boundary.model=auto` 只在 mask 同目录存在 `wall_disks.npy` 时走几何壁分支；
   没有就退回经验方差分支。
+- `mask` 的自动提议假设容器大致居中、内部比外部亮；严重不均匀照明、容器贴边或
+  非凸边界仍应人工画 mask。Hough 也可能把密集颗粒的某一圈误认成容器，所以 overlay
+  确认是流程的一部分，不是可选项。
 - 没有 GUI；批处理请用 CLI 或 Python API。
 
 ## 开发与测试

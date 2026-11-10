@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from . import batch as batch_mod
+from . import boundary
 from . import geometry as G
 from . import pipeline
 from . import schema
@@ -74,6 +75,24 @@ def _cmd_extract(args):
     print('case:    %s' % rec['case'])
     print('frames:  %s' % rec['n_frames'])
     print('out:     %s' % (Path(args.out) / 'sequences' / case_id))
+    return 0
+
+
+def _cmd_mask(args):
+    cfg = load_config(args.config, base_dir=args.base_dir)
+    info, mask_path, overlay_path, json_path = boundary.propose_from_raw(
+        args.raw, args.out, cfg, n_frames=args.frames, shape=args.shape,
+        margin_px=args.margin_px, threshold=args.threshold,
+        preview_frame=args.preview_frame, force=args.force)
+    print('proposed: %s' % info['shape'])
+    if info.get('radius_px') is not None:
+        print('center:   [%.2f, %.2f]' % tuple(info['center_px']))
+        print('radius:   %.2f px (includes %.2f px margin)'
+              % (info['radius_px'], info['margin_px']))
+    print('mask:     %s' % mask_path)
+    print('overlay:  %s' % overlay_path)
+    print('meta:     %s' % json_path)
+    print('inspect the overlay; if it covers the cell, use --mask %s' % mask_path)
     return 0
 
 
@@ -180,6 +199,19 @@ def build_parser():
     p.add_argument('--acquired-at', default=None)
     p.add_argument('--operator', default=None)
     p.set_defaults(func=_cmd_extract)
+
+    p = sub.add_parser('mask', help='propose a boundary mask from raw frames and write a confirmation overlay')
+    p.add_argument('--raw', required=True, help='directory of TIFF frames')
+    p.add_argument('--out', required=True, help='directory for interior_mask.png, mask_overlay.png, mask.json')
+    p.add_argument('--config', required=True, help='apparatus YAML (image/extensions/scale levels)')
+    p.add_argument('--base-dir', default=None)
+    p.add_argument('--frames', type=int, default=12, help='number of frames sampled across the recording')
+    p.add_argument('--shape', choices=['auto', 'circle', 'polygon'], default='auto')
+    p.add_argument('--margin-px', type=float, default=2.0)
+    p.add_argument('--threshold', type=float, default=None, help='foreground threshold; default: Otsu')
+    p.add_argument('--preview-frame', type=int, default=None, help='frame index used for the overlay')
+    p.add_argument('--force', action='store_true', help='overwrite an existing proposal')
+    p.set_defaults(func=_cmd_mask)
 
     p = sub.add_parser('geometry', help='write geometry.json for a tracked case')
     p.add_argument('--case-dir', required=True)
