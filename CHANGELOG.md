@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 — 2026-11-10
+
+- `vibrotrack extract --mask <png>` overrides `boundary.mask` in the apparatus config.
+  This keeps per-case masks in the data root while the apparatus config stays path-free.
+- No schema or detector behavior change.
+
 ## 0.1.0 — 2026-11-10
 
 - First public split from the private `vibrobot-experiment/extract` package.

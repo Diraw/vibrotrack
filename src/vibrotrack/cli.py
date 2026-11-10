@@ -59,6 +59,8 @@ def _cmd_extract(args):
         cfg.wall_band = int(args.wall_band)
     if args.strict_io:
         cfg.strict_io = True
+    if args.mask:
+        cfg.boundary_mask = Path(args.mask).expanduser().resolve()
     case_id = args.case_id or Path(args.raw).name
     rec = pipeline.run_case(
         args.raw, args.out, cfg, case_id=case_id, nframes=args.nframes,
@@ -156,6 +158,7 @@ def build_parser():
     p.add_argument('--out', required=True, help='batch directory; products go to <out>/sequences/<case>/')
     p.add_argument('--config', required=True, help='apparatus YAML')
     p.add_argument('--base-dir', default=None, help='resolve relative config paths here (default: cwd)')
+    p.add_argument('--mask', default=None, help='interior mask PNG; overrides boundary.mask in the config')
     p.add_argument('--case-id', default=None)
     p.add_argument('--nframes', type=int, default=None)
     p.add_argument('--workers', type=int, default=None)
