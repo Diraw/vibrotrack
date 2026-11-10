@@ -6,6 +6,7 @@ an apparatus config, then runs the real CLI (extract -> index -> accept -> verif
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import cv2
@@ -91,6 +92,21 @@ def test_cli_extract_index_accept_verify(tmp_path):
                      '--archive-root', str(archive)]) == 0
     assert (archive / 'batch' / 'FROZEN.json').exists()
 
+
+
+def test_cli_extract_mask_override(tmp_path):
+    frames, cfg_path = _make_case(tmp_path)
+    alt = tmp_path / 'alt_mask.png'
+    shutil.copy(tmp_path / 'masks' / 'interior_mask.png', alt)
+    batch = tmp_path / 'batch_override'
+    rc = cli.main([
+        'extract', '--raw', str(frames), '--out', str(batch),
+        '--config', str(cfg_path), '--base-dir', str(tmp_path),
+        '--mask', str(alt), '--case-id', 'syn_alt', '--nframes', '6',
+    ])
+    assert rc == 0
+    ds = json.loads((batch / 'sequences' / 'syn_alt' / 'dataset.json').read_text(encoding='utf-8'))
+    assert ds['boundary']['mask'] == str(alt.resolve())
 
 def test_config_paths_and_radius(tmp_path):
     _, cfg_path = _make_case(tmp_path)
