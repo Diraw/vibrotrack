@@ -201,7 +201,8 @@ python -m pip install -e ".[test]"
 python -m pytest -q
 ```
 
-测试全部用合成帧，不依赖实验室数据。真实数据回归请在你的项目仓里用固定 case 做，
+测试全部用合成帧，不依赖实验室数据。CI 在 Ubuntu/Windows、Python 3.10/3.12 上跑；
+本地也验证过 NumPy 1.26 与 2.x。真实数据回归请在你的项目仓里用固定 case 做，
 不要把原始 TIFF 提交到本仓库。
 
 ## 许可与引用
