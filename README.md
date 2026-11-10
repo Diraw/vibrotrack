@@ -116,7 +116,7 @@ vibrotrack verify --batch-dir batch
 vibrotrack archive --batch-dir batch --archive-root archive
 ```
 
-复制到 `archive/<batch>/` 并写 `FROZEN.json`。之后只读；要改就新建批次。
+复制到 `archive/<batch>/` 并写 `FROZEN.json`。`dets_*` 检测缓存和 `progress.json` 默认不复制；归档只保留可复现的最终产品。之后只读；要改就新建批次。
 
 ## 输出格式
 

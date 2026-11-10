@@ -294,7 +294,9 @@ def archive(batch_dir, archive_root, force=False):
         raise FileExistsError('archive target already exists: %s (use --force to replace)' % dest)
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(batch_dir, dest)
+    shutil.copytree(batch_dir, dest,
+                    ignore=shutil.ignore_patterns('dets_*', 'progress.json', '*.tmp.npz',
+                                                  '__pycache__', '.pytest_cache'))
     files = []
     for p in sorted(dest.rglob('*')):
         if p.is_file() and p.name != 'FROZEN.json':
