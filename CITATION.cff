@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use vibrotrack in academic work, please cite this repository."
+title: "vibrotrack: dense particle tracking for quasi-2D vibrated granular monolayers"
+abstract: >-
+  A command-line toolkit that turns high-speed TIFF frames of a quasi-2D vibrated
+  granular monolayer into a hash-checked particle dataset: centres, radii,
+  orientations, track ids, a geometry product, and batch-level admission gates.
+authors:
+  - name: "Diraw"
+version: 0.1.0
+date-released: "2026-11-10"
+url: "https://github.com/Diraw/vibrotrack"
+repository-code: "https://github.com/Diraw/vibrotrack"
+license: MIT
+keywords:
+  - granular materials
+  - particle tracking
+  - computer vision
+  - vibration

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibrotrack"
+version = "0.1.0"
+description = "Dense particle tracking and dataset archiving for quasi-2D vibrated granular monolayers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Diraw" }]
+keywords = ["granular", "particle tracking", "computer vision", "vibration", "experiment"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+  "numpy>=1.23",
+  "scipy>=1.9",
+  "opencv-python>=4.8",
+  "pillow>=9",
+  "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+dev = ["pytest>=7", "ruff>=0.6"]
+
+[project.scripts]
+vibrotrack = "vibrotrack.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

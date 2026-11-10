@@ -1,0 +1,58 @@
+# vibrotrack apparatus configuration
+#
+# One file = one camera/rig calibration. Relative paths are resolved against
+# the directory where you run the command (usually the project root).
+#
+# Copy this file, edit the values, and keep it next to the project's config.
+
+apparatus: shaker-2d
+
+# Acquisition
+fps: 10.0                  # frames per second actually recorded
+scale_levels: [128, 28224] # 16-bit -> 8-bit display range for the detector
+
+# Spatial calibration
+px_per_mm: 5.1558
+calibration:
+  source: "CAD affine assumption (replace with your metrology)"
+  uncertainty: 0.13         # px/mm, optional
+
+# Particle
+particle:
+  diameter_mm: 14.0
+  nominal_n: 485            # nominal load, used for phi; not the detected count
+
+# Image (optional; if set, the reader asserts the real frame matches)
+image:
+  width: 2500
+  height: 2496
+  dtype: uint16
+
+# Boundary / wall handling
+boundary:
+  mask: masks/interior_mask.png   # binary mask; omit for a full-frame ROI
+  model: empirical                # auto | geometry | empirical | off
+  band: 1                         # search 40 px outside the mask to recover wall-touching particles
+  dilate_px: 40
+  tol_px: 6.0
+
+# Detector and linker
+detector:
+  name: v2                        # v1 = frozen archive behaviour, v2 = fixed-radius centre fit
+  params: {}                      # e.g. {thresh: 0.20, min_rays: 14}
+
+linker:
+  name: v2
+  max_gap: 5
+
+# Run defaults
+run:
+  workers: 8
+  shard: 500
+  strict_io: false
+
+# Optional experiment metadata written into dataset.json
+conditions:
+  frequency_hz: 140.0
+  acceleration_g: 2.0
+  tilt_deg: 0.0

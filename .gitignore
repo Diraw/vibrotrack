@@ -1,0 +1,26 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Data and outputs
+*.npz
+*.npy
+*.tif
+*.tiff
+*.h5
+*.hdf5
+data/
+out/
+runs/
+
+# Local config
+config.local.*
+.env
