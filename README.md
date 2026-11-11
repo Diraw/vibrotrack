@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.3.0"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.3.1"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -181,7 +181,7 @@ sha256；`acceptance.json` 是门禁报告。字段见 [`docs/SCHEMA.md`](docs/S
 
 ### `mask.json`
 
-`vibrotrack mask` 的提议元数据：`status=proposed`、方法、中心/半径、采样帧、
+`vibrotrack mask` 的提议元数据：`status=proposed`（手动为 `manual`）、方法、中心/半径、采样帧、
 mask/overlay 的 sha256。字段见 [`docs/MASK.md`](docs/MASK.md)。
 
 ## 配置参考
@@ -222,7 +222,7 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 - 手动画：先 `vibrotrack frame ... --out preview.png` 导出一帧，再打开 `tools/mask_editor.html`，沿内侧点边界，导出 mask 或 points JSON。
 - **冻结颗粒 + 圆环**：工具用时间维 std 找外圈静态区；overlay 里绿色 mask 停在冻结环内侧，橙色圈标出外圈。
   这种数据提取时建议加 `--wall-band 0 --wall-model off`，不要把冻结环当可动颗粒搜进来。
-- `mask.json` 的 `status` 是 `proposed`；overlay 里绿色区域盖住活动区、没有大片漏检，才算确认。
+- `mask.json` 的 `status` 自动提议为 `proposed`、手动画为 `manual`；overlay 里绿色区域盖住活动区、没有大片漏检，才算确认。
 - 自动提议失败或光照很不均匀时，仍可手工画 mask：圆形容器画内部圆盘，半径取亮环内缘再减 5–10 px；矩形 ROI 可以把壁面画黑。
 - mask 尺寸必须与帧一致；不一致会直接报错，不会静默裁剪。
 
@@ -231,7 +231,7 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
 CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.3.0）
+## 已知限制（v0.3.1）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。

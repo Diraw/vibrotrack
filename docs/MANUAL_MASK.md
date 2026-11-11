@@ -48,7 +48,6 @@ vibrotrack frame \
   --raw frames \
   --config apparatus.yaml \
   --index 4500 \
-  --max-size 1600 \
   --out preview.png
 ```
 

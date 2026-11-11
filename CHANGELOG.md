@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 — 2026-11-11
+
+- Documentation fix for the manual editor: use an unscaled frame when exporting a
+  mask; record `status=manual` in the README and schema notes.
+
 ## 0.3.0 — 2026-11-11
 
 - Added `--shape irregular`: a non-convex contour fit for non-circular cells; `auto`
