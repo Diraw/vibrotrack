@@ -4,6 +4,7 @@ Inputs are never modified.  This module is intentionally free of lab-specific
 paths and case tables; the CLI/pipeline supplies a mask path and scale levels.
 """
 import json
+import os
 import re
 from pathlib import Path
 
@@ -217,7 +218,12 @@ def files_for(case, strict=False):
     # numbering is not zero-padded, or while files are being moved. Sort by the numeric tail.
     exts = tuple(x.lower() for x in (case.get('extensions') or ('.tiff', '.tif')))
     root = Path(case['path'])
-    files = [p for p in root.iterdir() if p.is_file() and p.suffix.lower() in exts]
+    # os.scandir returns the directory entry attributes with the listing, so
+    # is_file()/suffix do not cost a stat per frame (3.4 ms x 9000 on the USB
+    # archive = 31 s). Path.is_file() would stat every entry again.
+    with os.scandir(root) as entries:
+        files = [Path(e.path) for e in entries
+                 if e.is_file() and Path(e.name).suffix.lower() in exts]
     files.sort(key=_numeric_key)
     # 2026-11-06: a recording that is stopped mid-write leaves a 0-byte trailing file
     # (H:/dr/140hz_2g_14mm_P_1fps/..._2889.tiff). Drop trailing empties only: dropping one
