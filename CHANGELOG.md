@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.2 — 2026-11-12
+
+- `refine` now writes a complete batch: `masks/`, `apparatus.yaml` and the batch
+  `README.md` are copied next to `sequences/`, so `geometry`, `index`, `accept`
+  and `verify` can run on the refined batch without a manual copy step
+  (`index.json`/`acceptance.json` are deliberately not copied - they describe the
+  pre-refine chunk hashes);
+- the copied batch README gets a short "Refined copy" section with the source
+  case, recovered/refused counts and the row/track totals, and `refine.json`
+  records which batch assets were carried over;
+- the copied summaries (`full_summary.json`, `progress.json`) are refreshed: segments, link_fraction,
+  gap_closed, median_step_px, count_min/median/max, valid fractions and
+  `refined_at`. The parent's numbers contradicted the refined chunk while still
+  passing `accept`, which only hashes the file;
+- the docs now state the default pipeline: extract -> **refine** -> geometry ->
+  index/accept/verify. Manual `review`/`curate` is the fallback for the holes
+  `refine` refused, not a required pass.
+
 ## 0.9.1 — 2026-11-12
 
 - `refine` no longer re-links the whole case. The filled rows are spliced into

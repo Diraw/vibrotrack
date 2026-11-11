@@ -204,6 +204,8 @@ def test_incremental_splice_matches_full_relink(tmp_path):
     ]
     raw_case = _write_case(tmp_path / 'raw_case' / 'sequences' / 'demo', rows)
     _, case = RL.relink_case(raw_case, tmp_path / 'linked')
+    (Path(case) / 'full_summary.json').write_text(
+        json.dumps({'segments': 99, 'link_fraction': 0.1}), encoding='utf8')
 
     inc, inc_out = RF.refine_case(case, tmp_path / 'inc', raw, max_gap=5)
     full, full_out = RF.refine_case(case, tmp_path / 'full', raw, max_gap=5,
@@ -220,3 +222,8 @@ def test_incremental_splice_matches_full_relink(tmp_path):
     for key in ('n_detections', 'n_tracks', 'n_linked_rows', 'n_gap_rows',
                 'n_frames'):
         assert inc[key] == full[key], key
+
+    summary = json.loads((Path(inc_out) / 'full_summary.json').read_text(encoding='utf8'))
+    assert summary['segments'] == inc['n_tracks']
+    assert summary['status'] == 'refined'
+    assert summary['count_median'] == 3

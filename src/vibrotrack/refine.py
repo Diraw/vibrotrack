@@ -522,6 +522,99 @@ def _case_settings(case_dir):
     return cfg
 
 
+def _copy_batch_assets(case_dir, out_root):
+    """Make the refined output a complete batch (masks, apparatus, README).
+
+    The case directory only holds chunk sidecars; ``geometry`` and ``accept``
+    need the mask and the apparatus file, and a refined batch that silently
+    lacks them cannot be archived without another manual copy step.
+    """
+    case_dir = Path(case_dir)
+    if case_dir.parent.name != 'sequences':
+        return []
+    batch = case_dir.parent.parent
+    copied = []
+    for item in sorted(batch.iterdir()):
+        if item.name in ('sequences', 'logs', 'index.json', 'acceptance.json'):
+            continue
+        dst = Path(out_root) / item.name
+        if item.is_dir():
+            shutil.copytree(item, dst, dirs_exist_ok=True)
+        elif item.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, dst)
+        else:
+            continue
+        copied.append(item.name)
+    return copied
+
+
+def _refresh_summaries(seq_out, frames, stats, record):
+    """Refresh the copied summaries so they describe this chunk, not its parent.
+
+    ``full_summary.json`` and ``progress.json`` are copied from the source case;
+    their segment count and link fraction describe the pre-refine chunk and would
+    contradict the rows in this batch.  Index/accept hash the summary, so a stale
+    copy also survives the gates unnoticed.
+    """
+    seq_out = Path(seq_out)
+    counts = np.asarray([len(rec['xy_px']) for _fid, rec in frames], float)
+    angle_ok = np.concatenate([np.asarray(rec['angle_valid'], bool) for _fid, rec in frames])
+    centre_ok = np.concatenate([np.asarray(rec['center_valid'], bool) for _fid, rec in frames])
+    fields = {
+        'linker': record['linker'],
+        'link_fraction': stats['link_fraction'],
+        'segments': stats['n_tracks'],
+        'gap_closed': stats['n_gap_rows'],
+        'median_step_px': stats['median_step_px'],
+        'count_min': int(counts.min()) if len(counts) else 0,
+        'count_median': float(np.median(counts)) if len(counts) else 0,
+        'count_max': int(counts.max()) if len(counts) else 0,
+        'angle_valid_fraction': float(angle_ok.mean()) if len(angle_ok) else None,
+        'centre_valid_fraction': float(centre_ok.mean()) if len(centre_ok) else None,
+        'refined_at': record['created_at'],
+        'n_recovered': record['n_recovered'],
+    }
+    updated = []
+    for name in ('full_summary.json', 'progress.json'):
+        p = seq_out / name
+        if not p.exists():
+            continue
+        try:
+            summary = json.loads(p.read_text(encoding='utf8'))
+        except Exception:
+            summary = {}
+        summary.update(fields)
+        if name == 'full_summary.json':
+            summary['status'] = 'refined'
+        R._write_json(p, summary)
+        updated.append(name)
+    return updated
+
+
+def _annotate_readme(out_root, record):
+    """Append a short refinement note to the batch README that was copied over."""
+    p = Path(out_root) / 'README.md'
+    if not p.exists():
+        return False
+    text = p.read_text(encoding='utf8')
+    if '## Refined copy' in text:
+        return False
+    block = (
+        '\n## Refined copy (%s)\n\n'
+        'Source case: `%s`.\n\n'
+        '`vibrotrack refine` recovered %d of %d missing particles (holes up to %d '
+        'frames; %d refused), re-linked with %s and wrote %d rows in %d tracks, '
+        '%d gap rows, `link_mode=%s`. Every attempt, with its prediction and gate '
+        'values, is in `sequences/%s/refine.json`.\n'
+        % (record['created_at'][:10], record['source_case'], record['n_recovered'],
+           record['n_attempts'], record['max_gap'], record['n_rejected'],
+           record['linker'], record['n_detections'], record['n_tracks'],
+           record['n_gap_rows'], record.get('link_mode'), record['case']))
+    p.write_text(text.rstrip('\n') + '\n' + block, encoding='utf8')
+    return True
+
+
 def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
                 min_rays=None, max_rmse=None, max_offset=None, min_sep=None,
                 limit=0, force=False, verbose=False, incremental=True):
@@ -662,6 +755,7 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
             raise FileExistsError('output case is not empty (use --force): %s' % seq_out)
         shutil.rmtree(seq_out)
     seq_out.mkdir(parents=True, exist_ok=True)
+    batch_assets = _copy_batch_assets(case_dir, out_root)
     source_hashes = [{'file': p.name, 'sha256': R._sha256(p)} for p in chunks]
     outputs = R._write_chunks(chunk_frames, chunks, seq_out, keys, chunk_scalars)
     output_records = [{'file': p.name, 'bytes': p.stat().st_size,
@@ -698,12 +792,15 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
         'n_linked_rows': stats['n_linked_rows'],
         'n_gap_rows': stats['n_gap_rows'],
         'outputs': output_records,
+        'batch_assets': batch_assets,
         'note': ('Additive pass: existing rows are copied unchanged, new rows carry '
                  'recovered=1 and were placed by a local fixed-radius fit seeded at the '
                  'track prediction. No position is interpolated.'),
     }
     refine_path = seq_out / 'refine.json'
     R._write_json(refine_path, record)
+    _annotate_readme(out_root, record)
+    _refresh_summaries(seq_out, frames, stats, record)
     refine_entry = {'file': refine_path.name, 'bytes': refine_path.stat().st_size,
                     'sha256': R._sha256(refine_path)}
 

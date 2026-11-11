@@ -162,10 +162,11 @@ vibrotrack plot \
 `(cx + r*cos(theta), cy - r*sin(theta))`。`plot` 已固定使用这个约定，
 细节见 [`docs/OVERLAY.md`](docs/OVERLAY.md)。
 
-### 8. 自动补检（refine）
+### 8. 自动补检（refine，默认步骤）
 
 链接好的轨迹中间缺帧，说明那里本该有一颗颗粒却没被检出——接触遮挡让模板峰消失，
-或者一帧位移超过 detector 的 `max_shift`。`refine` 用轨迹本身给出的预测位置当种子，
+或者一帧位移超过 detector 的 `max_shift`。**提取之后默认先跑 refine**，人工 review
+只处理 refine 拒绝的缺口。`refine` 用轨迹本身给出的预测位置当种子，
 在 91×91 的局部窗口里重跑同一套固定半径射线拟合；只有拟合收敛、射线数 ≥14、
 边缘 rmse ≤1.2 px 且离预测不超过 12 px 时才写入。
 
@@ -179,14 +180,16 @@ vibrotrack refine \
 
 它是增量式的：原有检测行一个不改，新行带 `recovered=1`，写完后只把缺口两侧的
 行接回原有轨迹（不重跑整例链接，G0 上 21 s；`--full-relink` 走全量重链做审计，
-两者在 G0 上逐数组一致）。拟合不通过的位置保持空缺，留给人工复核——不会插值造点。在 G0 的 66 个缺口上
+两者在 G0 上逐数组一致）。输出是一个完整批次：`masks/`、`apparatus.yaml`、`README.md`
+一起带过去，`geometry`/`index`/`accept`/`verify` 可以直接在它上面跑。
+拟合不通过的位置保持空缺，交给人工复核——不会插值造点。在 G0 的 66 个缺口上
 66/66 全部找回，与人工点的中位偏差 1.04 px（最大 3.03 px），输出 4,644,516 行、
 516 条轨迹、零 gap 行，与人工 curation 的结果逐项一致。详见
 [`docs/REVIEW.md`](docs/REVIEW.md)。
 
-### 9. 可选的人工 review / curation
+### 9. 人工 review / curation（兜底）
 
-自动提取之后，只把计数异常的帧交给人工复核；原始 chunk 不改。
+只处理 `refine` 拒绝的缺口，或需要人工抽查的帧；原始 chunk 不改。
 
 ```bash
 vibrotrack review \

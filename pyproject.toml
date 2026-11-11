@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibrotrack"
-version = "0.9.1"
+version = "0.9.2"
 description = "Dense particle tracking and dataset archiving for quasi-2D vibrated granular monolayers"
 readme = "README.md"
 requires-python = ">=3.10"

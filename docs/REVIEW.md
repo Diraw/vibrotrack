@@ -1,11 +1,12 @@
-# Review and curation (optional)
+# Review and curation (fallback)
 
-The review layer runs **after** automatic extraction. It never calls the detector
-and never edits the original `chunk_*.npz`. It is meant for the small number of
-frames where the automatic count differs from the run mode (or where a user
-explicitly wants a second look).
+The default pipeline is extract -> **refine** -> geometry -> index/accept/verify.
+`refine` fills the holes a linked track proves must exist, so manual review is no
+longer a required pass: it is the fallback for the holes `refine` refused and the
+optional spot check. The review layer never calls the detector and never edits
+the original `chunk_*.npz`.
 
-## 0. Try the automatic recovery first
+## 0. The automatic recovery is the default
 
 Most holes are not judgement calls. A linked track that is missing exactly one
 frame still predicts the particle centre to a few pixels, and a fixed-radius fit
@@ -34,7 +35,11 @@ vibrotrack refine \
 On the dense G0 case this recovered 66/66 missing particles with a median
 1.04 px difference from the manual points (max 3.03 px) and reproduced the
 manually curated totals exactly (4,644,516 rows, 516 tracks, 0 gap rows).
-Run `review` afterwards: only the holes that `refine` refused will be queued.
+The output is a complete batch (masks, apparatus, README are copied), so
+`geometry`, `index`, `accept` and `verify` run on it directly.
+
+Run `review` on the refined case afterwards: only the holes that `refine`
+refused will be queued. Curation stays available as the fallback, not a step.
 
 ## 1. Build a review queue
 
