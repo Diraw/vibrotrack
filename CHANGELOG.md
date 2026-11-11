@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 — 2026-11-11
+
+- Added `vibrotrack plot`: render selected raw frames with fitted circles, centres
+  and orientation ticks from `chunk_*.npz`.
+- Added `vibrotrack.visualize.theta_endpoint`: one tested, public helper for the
+  y-up `theta_rad` convention. The image endpoint is
+  `(cx + r*cos(theta), cy - r*sin(theta))`; using `+sin` mirrors every tick.
+- Added `docs/OVERLAY.md` and a regression test that checks both the helper and a
+  rendered tick.
+
 ## 0.3.2 — 2026-11-11
 
 - Fixed `load_mask` for browser-exported RGBA masks: convert to luminance before

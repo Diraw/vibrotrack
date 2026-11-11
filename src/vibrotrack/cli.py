@@ -16,6 +16,7 @@ from . import detect as X
 from . import geometry as G
 from . import pipeline
 from . import schema
+from . import visualize
 from .config import load_config
 
 
@@ -131,6 +132,61 @@ def _cmd_frame(args):
     out.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(img).save(out)
     print('frame:   %s  (%dx%d) -> %s' % (files[index].name, img.shape[1], img.shape[0], out))
+    return 0
+
+
+def _cmd_plot(args):
+    """Render selected raw frames with centres, radii and y-up theta ticks."""
+    cfg = load_config(args.config, base_dir=args.base_dir)
+    raw = Path(args.raw).expanduser()
+    files = X.files_for({'path': str(raw), 'extensions': tuple(cfg.extensions)})
+    if not files:
+        raise FileNotFoundError('no frames found in %s' % args.raw)
+    case_dir = Path(args.case_dir).expanduser().resolve()
+    available = visualize.available_frame_ids(case_dir)
+    if not available:
+        raise FileNotFoundError('no chunk_*.npz in %s' % case_dir)
+    if args.frames:
+        wanted = []
+        for token in str(args.frames).replace(';', ',').split(','):
+            token = token.strip()
+            if not token:
+                continue
+            fi = int(token)
+            if fi < 0:
+                fi += len(files)
+            if fi < 0 or fi >= len(files):
+                raise IndexError('frame %s outside 0..%d' % (token, len(files) - 1))
+            if fi not in available:
+                raise KeyError('frame %d is not present in %s' % (fi, case_dir))
+            wanted.append(fi)
+        if not wanted:
+            raise ValueError('--frames did not contain an index')
+    else:
+        wanted = [available[0], available[len(available) // 2], available[-1]]
+        # de-duplicate a one-frame case while preserving order
+        wanted = list(dict.fromkeys(wanted))
+    recs = visualize.load_frame_records(case_dir, wanted)
+    out_dir = Path(args.out).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for fi in wanted:
+        rec = recs[fi]
+        image = X.read_image(files[fi], cfg.scale_levels)
+        label = '%s  frame %d  detected %d' % (
+            case_dir.name, fi, len(rec.get('xy_px', [])))
+        out = out_dir / ('%s_frame%05d_detections.jpg' % (case_dir.name, fi))
+        visualize.render_frame(
+            image,
+            rec.get('xy_px', np.empty((0, 2), np.float32)),
+            rec.get('radius_px', np.empty(0, np.float32)),
+            rec.get('theta_rad', np.empty(0, np.float32)),
+            out,
+            center_valid=rec.get('center_valid'),
+            angle_valid=rec.get('angle_valid'),
+            max_size=args.max_size,
+            label=label,
+        )
+        print('%s  (%d detections) -> %s' % (files[fi].name, len(rec.get('xy_px', [])), out))
     return 0
 
 
@@ -262,6 +318,19 @@ def build_parser():
     p.add_argument('--max-size', type=int, default=0, help='max output side in px; 0 = original (use original when exporting a mask)')
     p.add_argument('--out', required=True, help='output PNG/JPEG')
     p.set_defaults(func=_cmd_frame)
+
+    p = sub.add_parser('plot', help='render raw frames with fitted particles and orientation ticks')
+    p.add_argument('--raw', required=True, help='directory of TIFF frames')
+    p.add_argument('--case-dir', required=True,
+                   help='.../batch/sequences/<case> containing chunk_*.npz')
+    p.add_argument('--config', required=True, help='apparatus YAML (extensions/scale levels)')
+    p.add_argument('--base-dir', default=None)
+    p.add_argument('--frames', default='',
+                   help='comma-separated raw frame indices; default first/middle/last')
+    p.add_argument('--out', required=True, help='output directory for overlay JPEGs')
+    p.add_argument('--max-size', type=int, default=1200,
+                   help='longest output side in px; 0 = native resolution')
+    p.set_defaults(func=_cmd_plot)
 
     p = sub.add_parser('geometry', help='write geometry.json for a tracked case')
     p.add_argument('--case-dir', required=True)

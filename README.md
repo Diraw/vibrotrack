@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.3.2"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.4.0"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -144,6 +144,22 @@ vibrotrack archive --batch-dir batch --archive-root archive
 
 复制到 `archive/<batch>/` 并写 `FROZEN.json`。`dets_*` 检测缓存和 `progress.json` 默认不复制；归档只保留可复现的最终产品。之后只读；要改就新建批次。
 
+### 7. 检测叠加图
+
+```bash
+vibrotrack plot \
+  --raw frames \
+  --case-dir batch/sequences/case01 \
+  --config apparatus.yaml \
+  --frames 0,50,99 \
+  --out overlays
+```
+
+绿色圆圈是拟合外轮廓，黄点是圆心，橙色短线是颗粒朝向。`theta_rad` 是
+`atan2(-dy, dx)` 的 y-up 数学角；画图端点必须用
+`(cx + r*cos(theta), cy - r*sin(theta))`。`plot` 已固定使用这个约定，
+细节见 [`docs/OVERLAY.md`](docs/OVERLAY.md)。
+
 ## 输出格式
 
 ### `chunk_*.npz`
@@ -154,7 +170,7 @@ vibrotrack archive --batch-dir batch --archive-root archive
 |---|---|
 | `xy_px` | `(N,2)` 圆心像素坐标，x 向右、y 向下 |
 | `radius_px` | 每颗粒拟合半径 |
-| `theta_rad` | 标记方向，`atan2(-dy, dx)`；无效为 NaN |
+| `theta_rad` | 标记方向，`atan2(-dy, dx)`，即 y 向上的数学角；无效为 NaN。画图时用 `y = cy - r*sin(theta)`，见 [`docs/OVERLAY.md`](docs/OVERLAY.md) |
 | `center_valid` / `angle_valid` | 该行是否可用于定量分析 |
 | `confidence` | 模板匹配分数 |
 | `edge_rmse_px` | 径向边缘拟合残差 |
@@ -231,7 +247,7 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
 CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.3.2）
+## 已知限制（v0.4.0）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。
