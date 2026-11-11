@@ -1,3 +1,12 @@
+## 0.6.0 — 2026-11-11
+
+- add `vibrotrack relink`: recompute trajectory identities on an existing or
+  curated case without re-detecting;
+- preserve `xy_px`, `radius_px`, `theta_rad`, `angle_valid`, `manual_edit` and
+  all detector quality fields;
+- add `relink/v1` audit with source/output hashes and track statistics;
+- add tests for manual rows across chunk boundaries and both v1/v2 linkers.
+
 # Changelog
 
 ## 0.5.1 — 2026-11-11

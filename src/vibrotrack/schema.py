@@ -32,6 +32,13 @@ def slugify(text):
 
 
 def package_version():
+    # Keep the source tree authoritative; an old editable-install egg-info
+    # must not make `vibrotrack --version` disagree with __init__.py.
+    try:
+        from . import __version__
+        return str(__version__)
+    except Exception:
+        pass
     try:
         from importlib.metadata import version
         return version('vibrotrack')

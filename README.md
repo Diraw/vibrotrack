@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.5.1"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.6.0"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -182,8 +182,22 @@ vibrotrack curate \
 
 人工补检的颗粒写入独立的 curated 数据，`manual_edit=1`；如果 curate 提供
 `--raw`/`--config`，会用暗色 marker 的局部质心估计朝向，估计失败则保持
-`angle_valid=False`，不伪造角度。并保留 `review.json` 审计记录。第一版只整理检测行，不重新链接轨迹；轨迹分析前
-需要在 curated 数据上重跑 linker。详见 [`docs/REVIEW.md`](docs/REVIEW.md)。
+`angle_valid=False`，不伪造角度。并保留 `review.json` 审计记录。
+
+curate 只整理检测行，不自动重链。轨迹分析前在 curated 数据上运行：
+
+```bash
+vibrotrack relink \
+  --case-dir curated/case01 \
+  --out relinked/case01
+```
+
+`relink` 不读原始帧、不调用 detector，只重算 `segment_id`、
+`previous_detection`、`link_valid`、`gap_frames`、`step_px`、`dtheta_rad`
+等轨迹字段；位置、半径、朝向和 `manual_edit` 不变。输出写
+`relinked/case01/sequences/case01/relink.json`。默认从 `run_config.json`
+读取 linker 和 gap，也可用 `--linker`/`--link-gap` 覆盖。详见
+[`docs/REVIEW.md`](docs/REVIEW.md)。
 
 ## 输出格式
 
@@ -273,7 +287,7 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
 CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.5.1）
+## 已知限制（v0.6.0）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。

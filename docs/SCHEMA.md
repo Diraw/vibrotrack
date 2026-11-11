@@ -41,7 +41,7 @@ See [`MASK.md`](MASK.md) and [`MANUAL_MASK.md`](MANUAL_MASK.md).
   "conditions": {"frequency_hz": 140.0, "acceleration_g": 2.0},
   "calibration": {"px_per_mm": 5.1558, "source": "cad_affine_assumed", "uncertainty_px_per_mm": null},
   "boundary": {"mode": "mask", "mask": "...", "mask_sha256": "...", "wall_model": "empirical", "wall_band": 1},
-  "code": {"name": "vibrotrack", "version": "0.5.1", "commit": "...", "dirty": false},
+  "code": {"name": "vibrotrack", "version": "0.6.0", "commit": "...", "dirty": false},
   "outputs": [{"file": "chunk_00000_17999.npz", "bytes": 314582971, "sha256": "..."}],
   "qc": {"status": "extracted"},
   "retention": {"raw_path": "<raw volume>/...", "raw_deleted": false},
@@ -126,3 +126,35 @@ The editor writes `review-actions/v1`; `curate` writes `curation/v1` in
 `angle_valid` may be true. If the marker cannot be estimated, the row keeps
 `angle_valid=False`, `theta_rad=NaN`. Untouched rows keep their automatic
 tracking fields. See [`REVIEW.md`](REVIEW.md).
+
+## Relink products
+
+`vibrotrack relink` writes a new case directory and a `relink/v1` record:
+
+```json
+{
+  "schema": "relink/v1",
+  "case": "case01",
+  "source_chunks": [
+    {"file": "chunk_00000_00099.npz", "sha256": "..."}
+  ],
+  "linker": "v2",
+  "link_gap": 5,
+  "n_frames": 100,
+  "n_detections": 51500,
+  "n_tracks": 515,
+  "n_linked_rows": 50985,
+  "n_gap_rows": 0,
+  "n_manual_rows": 7,
+  "link_fraction": 0.9900,
+  "median_step_px": 3.2,
+  "outputs": [{"file": "chunk_00000_00099.npz", "sha256": "..."}]
+}
+```
+
+Re-linking assigns a new set of trajectory ids; do not compare them with the
+pre-relink ids. Only tracking fields are recomputed: `segment_id`, `previous_detection`,
+`link_valid`, `gap_frames`, `link_margin_px`, `step_px`, `dtheta_rad`.
+Detector fields, `xy_px`, `radius_px`, `theta_rad`, `angle_valid` and
+`manual_edit` are preserved. The output `dataset.json` gets
+`qc.status = "relinked"` or `"curated+relinked"` and a `relink` summary.

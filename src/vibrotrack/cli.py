@@ -16,6 +16,7 @@ from . import detect as X
 from . import geometry as G
 from . import pipeline
 from . import review as review_mod
+from . import relink as relink_mod
 from . import schema
 from . import visualize
 from .config import load_config
@@ -204,6 +205,22 @@ def _cmd_curate(args):
     print('changes: %s' % rec['frame_changes'])
     print('review:  %s' % (Path(args.out).resolve() / 'review.json'))
     print('note:    %s' % rec['note'])
+    return 0
+
+
+def _cmd_relink(args):
+    """Recompute trajectory identities on an existing curated case."""
+    rec, seq_out = relink_mod.relink_case(
+        args.case_dir, args.out, linker=args.linker, link_gap=args.link_gap,
+        force=args.force)
+    print('case:     %s' % rec['case'])
+    print('frames:   %d; rows: %d; manual rows: %d' % (
+        rec['n_frames'], rec['n_detections'], rec['n_manual_rows']))
+    print('linker:   %s (gap %d)' % (rec['linker'], rec['link_gap']))
+    print('tracks:   %d; linked rows: %d; gap rows: %d' % (
+        rec['n_tracks'], rec['n_linked_rows'], rec['n_gap_rows']))
+    print('out:      %s' % seq_out)
+    print('relink:   %s' % (seq_out / 'relink.json'))
     return 0
 
 
@@ -418,6 +435,18 @@ def build_parser():
     p.add_argument('--base-dir', default=None)
     p.add_argument('--force', action='store_true', help='replace a non-empty output directory')
     p.set_defaults(func=_cmd_curate)
+
+    p = sub.add_parser('relink', help='recompute trajectories on an existing/curated case without re-detecting')
+    p.add_argument('--case-dir', required=True,
+                   help='.../sequences/<case> containing chunk_*.npz, or a batch with one case')
+    p.add_argument('--out', required=True,
+                   help='new batch root; products go to <out>/sequences/<case>/')
+    p.add_argument('--linker', choices=['v1', 'v2'], default=None,
+                   help='override run_config.json linker (default: v2)')
+    p.add_argument('--link-gap', type=int, default=None,
+                   help='override run_config.json gap (default: 5)')
+    p.add_argument('--force', action='store_true', help='replace an existing output case')
+    p.set_defaults(func=_cmd_relink)
 
     p = sub.add_parser('plot', help='render raw frames with fitted particles and orientation ticks')
     p.add_argument('--raw', required=True, help='directory of TIFF frames')

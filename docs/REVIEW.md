@@ -97,13 +97,59 @@ Removed detections are absent from the curated chunk. `review.json` records ever
 applied and skipped action, the action file hash, the source chunk hashes, frame
 count changes and the curated output hashes.
 
-## Trajectory note
+## 4. Re-link trajectories
 
-This first version curates **detection rows**, not trajectories. Existing
-`segment_id` values are preserved for untouched rows; manually added rows are
-unlinked. Run the linker on the curated chunks before doing trajectory-level
-analysis. Manual rows can have an estimated marker direction, but if the marker
-is not visible the row is explicitly angle-invalid rather than guessed.
+`curate` curates **detection rows**, not trajectories. Existing `segment_id`
+values are preserved for untouched rows and manually added rows enter with
+`segment_id=-1`. Before trajectory-level analysis, run the linker on the
+curated case:
+
+```bash
+vibrotrack relink \
+  --case-dir curated/case01 \
+  --out relinked/case01
+```
+
+The input can be the batch directory (`curated/case01`) or its single
+`sequences/<case>` directory. The output is a new batch-style tree:
+
+```text
+relinked/case01/
+  sequences/case01/
+    chunk_*.npz
+    dataset.json          # qc.status = curated+relinked
+    review.json           # copied audit
+    relink.json
+```
+
+`relink` does not read raw frames and does not call the detector. It recomputes
+only tracking fields:
+
+- `segment_id`
+- `previous_detection`
+- `link_valid`
+- `gap_frames`
+- `link_margin_px`
+- `step_px`
+- `dtheta_rad`
+
+Positions, radii, `theta_rad`, `angle_valid`, `manual_edit` and all detector
+quality fields are unchanged. The linker and gap are read from
+`run_config.json`; override with `--linker v1|v2` or `--link-gap N`.
+
+`relink.json` records source chunk hashes, linker/gap, frame and row counts,
+track count, linked/gap/manual row counts, and output hashes. It refuses to
+write into the input case; use a new `--out` directory (or `--force` to replace
+an existing output case).
+
+```bash
+# after relinking, the curated manual orientations are still present
+vibrotrack plot \
+  --raw frames \
+  --case-dir relinked/case01/sequences/case01 \
+  --config apparatus.yaml \
+  --frames 43,64 --out overlays
+```
 
 ## Safety rules
 
