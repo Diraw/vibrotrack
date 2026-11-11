@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.6.1"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.7.0"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -100,6 +100,8 @@ vibrotrack extract \
   --case-id case01 \
   --mask masks/case01/interior_mask.png
 ```
+
+默认会用最近 5 帧检测结果作为 prior，并在每个 shard 前多检测 5 帧作为 warm-up；这避免 500 帧分片边界丢失上一帧信息。要复现旧行为可用 `--prior-frames 1 --shard-overlap 0`。
 
 产物在 `batch/sequences/case01/`：
 
@@ -259,6 +261,8 @@ mask/overlay 的 sha256。字段见 [`docs/MASK.md`](docs/MASK.md)。
 | `linker.max_gap` | 5 | 最多补几帧 |
 | `run.workers` | 8 | 并行进程数；HDD 建议 1–4，SSD 可 8–12 |
 | `run.shard` | 500 | 每个检测分片的帧数 |
+| `run.prior_frames` | 5 | 用最近几帧的检测位置作为 detector prior；1 = 仅上一帧 |
+| `run.shard_overlap` | 5 | 每个 shard 前面重新检测的 warm-up 帧数；避免 shard 边界丢失 prior |
 
 ## 边界 mask 怎么做
 
@@ -287,7 +291,7 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
 CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.6.1）
+## 已知限制（v0.7.0）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。

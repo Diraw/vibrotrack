@@ -53,6 +53,14 @@ def _write_dataset(case, config, case_dir, raw, dataset_id, project, campaign,
             'nominal_n': config.nominal_n,
         },
         'conditions': config.conditions,
+        'tracking': {
+            'detector': config.detector,
+            'detector_params': dict(config.detector_params),
+            'prior_frames': int(config.prior_frames),
+            'shard_overlap': int(config.shard_overlap),
+            'linker': config.linker,
+            'link_gap': int(config.link_gap),
+        },
         'calibration': {
             'px_per_mm': config.px_per_mm,
             'source': config.calibration_source,
@@ -128,6 +136,8 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
         extensions=tuple(config.extensions),
         detector_params=dict(config.detector_params),
         prior=bool(config.prior),
+        prior_frames=int(config.prior_frames),
+        shard_overlap=int(config.shard_overlap),
         particle_radius_px=float(config.radius_px),
     )
 
@@ -148,8 +158,14 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
     case['mask_source'] = mask_src or 'full_frame'
     progress('files: %d (%.2f s), shape=%s' % (len(files), time.time() - t0, case['shape']))
 
-    tasks = [(case, lo, min(lo + shard, n), files[lo:min(lo + shard, n)])
-             for lo in range(0, n, shard)]
+    overlap = int(config.shard_overlap)
+    tasks = []
+    for lo in range(0, n, shard):
+        hi = min(lo + shard, n)
+        file_lo = max(0, lo - overlap)
+        # The warm-up frames are detected but not written; they carry the prior
+        # across a shard boundary so the first output frame is not blind.
+        tasks.append((case, lo, hi, files[file_lo:hi], file_lo))
     if limit_shards:
         tasks = tasks[:int(limit_shards)]
     link_state = None if no_link else D.new_link_state(case)
@@ -172,7 +188,7 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
                 link_seconds += time.perf_counter() - t
                 next_lo = rr['hi']
     dt = time.time() - t0
-    frames = sum(len(t[3]) for t in tasks)
+    frames = sum(int(t[2]) - int(t[1]) for t in tasks)
     progress('detect: %d frames in %.1f s (%.1f frames/s, %d workers, shard %d%s)'
              % (frames, dt, frames / dt, workers, shard,
                 ', link overlapped' if link_state is not None else ''))

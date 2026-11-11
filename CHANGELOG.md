@@ -1,3 +1,13 @@
+## 0.7.0 — 2026-11-11
+
+- keep detector prior across shard boundaries with configurable warm-up frames
+  (`run.shard_overlap`, default 5);
+- use the last N frames of detections as prior seeds (`run.prior_frames`,
+  default 5), instead of only the immediately previous frame;
+- encode prior/overlap in the `dets_*` cache tag so stale caches cannot mix;
+- add diagnostics in `docs/TROUBLESHOOTING.md`;
+- test synthetic frame coverage and prior/overlap config defaults.
+
 ## 0.6.1 — 2026-11-11
 
 - record `manual_rows` (frame, position, final segment id, link flag, gap) in

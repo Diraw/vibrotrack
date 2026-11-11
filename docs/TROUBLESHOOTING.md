@@ -64,3 +64,21 @@ sure the notebook kernel is not spawning itself.
 Copy the whole batch directory, including `index.json` and `acceptance.json`. If files
 were modified after `index`, re-run `vibrotrack index` (which re-hashes) before `verify`.
 Do not edit a frozen archive.
+
+## Count drops at regular intervals / short trajectory fragments
+
+If low-count frames cluster near 500-frame boundaries, the detector lost its
+previous-frame prior at a shard boundary. This is not a missing particle in the
+image. The extractor now defaults to:
+
+```yaml
+run:
+  prior_frames: 5      # use the last 5 frames as detector seeds
+  shard_overlap: 5     # re-detect 5 warm-up frames before each shard
+```
+
+Check `run_config.json` for these values and the `dets_*` cache tag (`p5_o5`).
+For a case extracted with an older cache, use a new output directory or remove
+the old `dets_*` directory; changing these settings changes the detections and
+therefore the chunk. Reproduce the old behavior with
+`--prior-frames 1 --shard-overlap 0`.

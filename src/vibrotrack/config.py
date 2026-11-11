@@ -34,6 +34,8 @@ Example
     run:
       workers: 8
       shard: 500
+      prior_frames: 5
+      shard_overlap: 5
     scale_levels: [128, 28224]
     conditions:
       frequency_hz: 140
@@ -76,6 +78,8 @@ class ApparatusConfig:
     strict_io: bool = False
     prefetch: bool = True
     prior: bool = True
+    prior_frames: int = 5
+    shard_overlap: int = 5
     extensions: tuple[str, ...] = ('.tiff', '.tif')
     conditions: dict[str, Any] = field(default_factory=dict)
     calibration_source: str = 'unspecified'
@@ -164,6 +168,8 @@ def load_config(path, base_dir=None) -> ApparatusConfig:
     cfg.strict_io = bool(_get(raw, 'run', 'strict_io', default=cfg.strict_io))
     cfg.prefetch = bool(_get(raw, 'run', 'prefetch', default=cfg.prefetch))
     cfg.prior = bool(_get(raw, 'run', 'prior', default=cfg.prior))
+    cfg.prior_frames = int(_get(raw, 'run', 'prior_frames', default=cfg.prior_frames))
+    cfg.shard_overlap = int(_get(raw, 'run', 'shard_overlap', default=cfg.shard_overlap))
     exts = raw.get('extensions')
     if exts:
         cfg.extensions = tuple(str(e).lower() if str(e).startswith('.') else '.' + str(e).lower() for e in exts)
@@ -196,5 +202,9 @@ def _validate(cfg: ApparatusConfig):
         raise ValueError('boundary.model must be auto|geometry|empirical|off')
     if cfg.wall_band not in (0, 1):
         raise ValueError('boundary.band must be 0 or 1')
+    if cfg.prior_frames < 1:
+        raise ValueError('run.prior_frames must be >= 1')
+    if cfg.shard_overlap < 0:
+        raise ValueError('run.shard_overlap must be >= 0')
     if cfg.scale_levels[1] <= cfg.scale_levels[0]:
         raise ValueError('scale_levels[1] must be greater than scale_levels[0]')

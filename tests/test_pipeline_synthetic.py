@@ -73,7 +73,7 @@ def test_cli_extract_index_accept_verify(tmp_path):
     chunks = list(case_dir.glob('chunk_*.npz'))
     assert len(chunks) == 1
     with np.load(chunks[0], allow_pickle=False) as z:
-        assert len(z['frame_ids']) == 6
+        assert z['frame_ids'].tolist() == list(range(6))
         assert len(z['xy_px']) > 0
         assert len(z['frame_offsets']) == 7
     ds = json.loads((case_dir / 'dataset.json').read_text(encoding='utf-8'))
@@ -127,3 +127,14 @@ def test_geometry_envelope_fit_on_dense_ring():
     assert abs(rec['center_px'][1] - 500) < 1.0
     assert abs(rec['wall_radius_px'] - (400 + 35)) < 2.0
     assert rec['phi'] > 0
+
+
+def test_prior_and_overlap_defaults():
+    from vibrotrack import shards
+    from vibrotrack.config import ApparatusConfig
+    cfg = ApparatusConfig()
+    assert cfg.prior_frames == 5
+    assert cfg.shard_overlap == 5
+    tag = shards.det_tag({'detector': 'v2', 'prior_frames': 7,
+                          'shard_overlap': 3})
+    assert 'p7_o3' in tag

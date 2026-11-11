@@ -57,6 +57,10 @@ def det_tag(case):
     parts = []
     if case.get('detector', 'v2') != 'v1':
         parts.append(case.get('detector', 'v2'))
+    # Prior history and shard overlap both change detections; keep their caches
+    # separate from the pre-overlap algorithm.
+    parts.append('p%d_o%d' % (int(case.get('prior_frames', 5)),
+                              int(case.get('shard_overlap', 5))))
     if int(case.get('wall_band', 0)):
         parts.append('w%d' % int(case.get('wall_dilate', 40)))
         parts.append('a%d' % int(float(case.get('avoid_r', 62.0))))
@@ -103,12 +107,17 @@ def resolve_wall_model(case, src):
 def shard_task(args):
     case, lo, hi = args[:3]
     files = args[3] if len(args) > 3 else None
+    file_lo = int(args[4]) if len(args) > 4 else lo
     cv2.setNumThreads(1)
     cid = case['id']
     if files is None:
-        # Backward-compatible path for old drivers. New drivers pass files[lo:hi], so the
-        # 9000-file directory scan/stat happens once in the parent instead of per shard.
-        files = X.files_for(case)[lo:hi]
+        # Backward-compatible path for old drivers. New drivers pass files[file_lo:hi],
+        # so the 9000-file directory scan/stat happens once in the parent instead of
+        # per shard. file_lo may be earlier than lo: those frames are prior warm-up.
+        files = X.files_for(case)[file_lo:hi]
+    if len(files) != hi - file_lo:
+        raise ValueError('shard files do not cover [%d,%d): got %d files'
+                         % (file_lo, hi, len(files)))
     out = out_root(case) / cid / ('dets' + det_tag(case))
     out.mkdir(parents=True, exist_ok=True)
     dst = out / f'det_{lo:05d}_{hi-1:05d}.npz'
@@ -153,6 +162,14 @@ def shard_task(args):
     detector = case.get('detector', 'v2')
 
     use_prior = bool(case.get('prior', True)) and detector != 'v1'
+    prior_frames = max(1, int(case.get('prior_frames', 1)))
+
+    def prior_xy(records):
+        """Concatenate the last few frames as detector seeds."""
+        if not (use_prior and records):
+            return None
+        parts = [r['xy_px'] for r in records[-prior_frames:] if len(r['xy_px'])]
+        return np.concatenate(parts) if parts else None
 
     def detect_frame(im, prior=None):
         if detector == 'v1':
@@ -174,7 +191,7 @@ def shard_task(args):
         q = queue.Queue(maxsize=3)
         def _reader():
             try:
-                for fi, path in enumerate(files, start=lo):
+                for fi, path in enumerate(files, start=file_lo):
                     q.put((fi, X.read_image(path, case['scale_levels'], strict=strict_io)))
             except Exception as exc:      # surface read errors in the consumer
                 q.put(exc)
@@ -188,23 +205,29 @@ def shard_task(args):
                 break
             if isinstance(item, Exception):
                 raise item
-            prev = recs[-1]['xy_px'][-800:] if (use_prior and recs) else None
+            prev = prior_xy(recs)
             recs.append(detect_frame(item[1], prev))
         th.join()
     else:
-        for fi, path in enumerate(files, start=lo):
+        for fi, path in enumerate(files, start=file_lo):
             im = X.read_image(path, case['scale_levels'], strict=strict_io)
-            prev = recs[-1]['xy_px'][-800:] if (use_prior and recs) else None
+            prev = prior_xy(recs)
             recs.append(detect_frame(im, prev))
-    payload = {k: np.concatenate([r[k] for r in recs]) for k in recs[0]}
-    offsets = np.concatenate([[0], np.cumsum([len(r['xy_px']) for r in recs])])
-    payload['frame_ids'] = np.arange(lo, lo + len(files))
+    # Warm-up frames only supply prior; they are not part of this shard's
+    # contract. Trim them before writing the det cache.
+    trim = lo - file_lo
+    out_recs = recs[trim:]
+    if not out_recs:
+        raise ValueError('shard [%d,%d) has no output frames' % (lo, hi))
+    payload = {k: np.concatenate([r[k] for r in out_recs]) for k in out_recs[0]}
+    offsets = np.concatenate([[0], np.cumsum([len(r['xy_px']) for r in out_recs])])
+    payload['frame_ids'] = np.arange(lo, hi)
     payload['frame_offsets'] = offsets
     tmp = dst.with_suffix('.tmp.npz')
     np.savez_compressed(tmp, **payload)
     tmp.replace(dst)
     return {'case': cid, 'lo': lo, 'hi': hi, 'status': 'ok', 'seconds': time.time() - t0,
-            'frames': hi - lo, 'median_count': float(np.median([len(r['xy_px']) for r in recs]))}
+            'frames': hi - lo, 'median_count': float(np.median([len(r['xy_px']) for r in out_recs]))}
 
 
 def det_path(case, lo, hi):
@@ -473,6 +496,7 @@ def write_run_config(case, cid, model):
         wall_model=model, wall_band=int(case.get('wall_band', 0)),
         wall_dilate=int(case.get('wall_dilate', 40)), wall_tol_px=float(case.get('wall_tol_px', 6.0)),
         avoid_r=float(case.get('avoid_r', 0.0)), link_gap=int(case.get('link_gap', 5)),
+        prior_frames=int(case.get('prior_frames', 5)), shard_overlap=int(case.get('shard_overlap', 5)),
         wall_static_std=bool(case.get('wall_static_std', True)),
         wall_static_thresh=float(case.get('wall_static_thresh', 10.0)),
         detector_defaults={k: float(v) for k, v in D2.DEFAULTS.items()},
