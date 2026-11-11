@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-11-11
+
+- Fixed `load_mask` for browser-exported RGBA masks: convert to luminance before
+  shape checking and threshold at mid-grey. This makes a 2400x2400 RGBA PNG usable
+  directly with `extract --mask`.
+- The manual editor now binarizes the exported mask before PNG encoding.
+
 ## 0.3.1 — 2026-11-11
 
 - Documentation fix for the manual editor: use an unscaled frame when exporting a

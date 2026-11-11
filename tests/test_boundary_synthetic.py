@@ -224,3 +224,11 @@ def test_manual_polygon_mask(tmp_path):
     mask_hole = np.asarray(Image.open(out_hole / 'interior_mask.png')) > 0
     assert not mask_hole[220, 220]
     assert mask_hole[300, 300]
+    # Browser-exported masks are RGBA; the loader must collapse them to one
+    # channel and threshold antialiased edges before shape checking.
+    from vibrotrack.mask import load_mask
+    rgba_path = tmp_path / 'manual_rgba.png'
+    Image.open(out_hole / 'interior_mask.png').convert('RGBA').save(rgba_path)
+    loaded, _ = load_mask(rgba_path, shape=(600, 600))
+    assert loaded.shape == (600, 600)
+    assert loaded.mean() > 0.05

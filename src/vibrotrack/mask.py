@@ -38,10 +38,15 @@ def load_mask(mask_path=None, shape=None, required=False):
             if required:
                 raise FileNotFoundError('boundary mask not found: %s' % p)
             return full_mask(shape), None
-        a = np.asarray(Image.open(p))
+        # Browser-exported masks are often RGBA with an opaque alpha channel
+        # and anti-aliased edges.  Convert to luminance before validating the
+        # shape, otherwise a 2400x2400 mask looks like (2400, 2400, 4) and is
+        # rejected.  Threshold at mid-grey so anti-aliased edge pixels do not
+        # silently enlarge the search region.
+        a = np.asarray(Image.open(p).convert('L'))
         if shape is not None and tuple(a.shape) != tuple(int(x) for x in shape):
             raise ValueError(
                 'boundary mask shape %r does not match image shape %r (%s)'
                 % (a.shape, tuple(shape), p))
-        return (a > 0).astype(np.uint8), str(p)
+        return (a > 127).astype(np.uint8), str(p)
     return full_mask(shape), None
