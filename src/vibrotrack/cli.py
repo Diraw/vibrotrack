@@ -177,10 +177,30 @@ def _cmd_review(args):
 
 def _cmd_curate(args):
     """Apply a review action log to a separate curated copy."""
+    loader = None
+    if bool(args.raw) != bool(args.config):
+        raise ValueError('--raw and --config must be supplied together for orientation estimation')
+    if args.raw and args.config:
+        cfg = load_config(args.config, base_dir=args.base_dir)
+        raw = Path(args.raw).expanduser()
+        files = X.files_for({'path': str(raw), 'extensions': tuple(cfg.extensions)})
+        if not files:
+            raise FileNotFoundError('no frames found in %s' % args.raw)
+
+        def loader(frame):
+            frame = int(frame)
+            if frame < 0 or frame >= len(files):
+                raise IndexError('frame %d outside raw frame list 0..%d' % (frame, len(files) - 1))
+            return X.read_image(files[frame], cfg.scale_levels)
+
     rec = review_mod.apply_actions(
         args.case_dir, args.actions, args.out,
-        tolerance=args.tolerance, force=args.force)
-    print('applied: %d; skipped: %d' % (rec['n_applied'], rec['n_skipped']))
+        tolerance=args.tolerance, force=args.force,
+        image_loader=loader)
+    n_angle = sum(1 for a in rec['applied']
+                  if a['op'] == 'add' and a.get('angle_valid'))
+    print('applied: %d; skipped: %d; manual angle estimated: %d' % (
+        rec['n_applied'], rec['n_skipped'], n_angle))
     print('changes: %s' % rec['frame_changes'])
     print('review:  %s' % (Path(args.out).resolve() / 'review.json'))
     print('note:    %s' % rec['note'])
@@ -391,6 +411,11 @@ def build_parser():
     p.add_argument('--out', required=True, help='new curated case directory')
     p.add_argument('--tolerance', type=float, default=8.0,
                    help='max distance (px) for matching a removal or duplicate')
+    p.add_argument('--raw', default=None,
+                   help='optional raw frame directory; with --config, estimate manual orientations')
+    p.add_argument('--config', default=None,
+                   help='optional apparatus YAML for scaling raw frames')
+    p.add_argument('--base-dir', default=None)
     p.add_argument('--force', action='store_true', help='replace a non-empty output directory')
     p.set_defaults(func=_cmd_curate)
 

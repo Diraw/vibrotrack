@@ -20,6 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .orientation import estimate_marker_orientation
+
 QUEUE_SCHEMA = 'review-queue/v1'
 ACTIONS_SCHEMA = 'review-actions/v1'
 CURATION_SCHEMA = 'curation/v1'
@@ -210,17 +212,19 @@ def _nearest_row(xy, point):
     return k, float(d[k])
 
 
-def _field_default(key, n, radius):
+def _field_default(key, n, radius, action=None):
+    action = action or {}
     if key == 'xy_px':
         raise ValueError('xy_px must be supplied explicitly')
     if key == 'radius_px':
         return np.full(n, float(radius), np.float32)
     if key == 'theta_rad':
-        return np.full(n, np.nan, np.float32)
+        theta = action.get('theta_rad', np.nan)
+        return np.full(n, theta if theta is not None else np.nan, np.float32)
     if key == 'center_valid':
         return np.ones(n, bool)
     if key == 'angle_valid':
-        return np.zeros(n, bool)
+        return np.full(n, bool(action.get('angle_valid', False)), bool)
     if key == 'confidence':
         return np.zeros(n, np.float32)
     if key == 'edge_rmse_px':
@@ -234,7 +238,8 @@ def _field_default(key, n, radius):
     if key == 'boundary_distance_px':
         return np.full(n, np.nan, np.float32)
     if key == 'quality_bits':
-        return np.ones(n, np.uint16)  # bit 0: angle invalid
+        # bit 0: angle invalid
+        return np.full(n, 0 if action.get('angle_valid', False) else 1, np.uint16)
     if key == 'outside_mask':
         return np.zeros(n, np.uint8)
     if key == 'segment_id':
@@ -266,12 +271,15 @@ def _image_shape(case_dir, override=None):
 
 
 def apply_actions(case_dir, actions_path, out_dir, *, tolerance=8.0,
-                  image_shape=None, force=False):
+                  image_shape=None, force=False, image_loader=None):
     """Apply review actions to a **copy** of a case.
 
     The original chunk files are never modified.  Existing rows keep their
-    original tracking fields; inserted rows get ``segment_id=-1``,
-    ``angle_valid=False`` and ``manual_edit=1``.  Returns the curation record.
+    original tracking fields; inserted rows get ``segment_id=-1`` and
+    ``manual_edit=1``.  When ``image_loader(frame)`` is supplied, the marker
+    direction is estimated from the raw frame around the manual centre; if the
+    mark is not found, the row keeps ``angle_valid=False`` and ``theta_rad=NaN``.
+    Returns the curation record.
     """
     import shutil
 
@@ -298,6 +306,14 @@ def apply_actions(case_dir, actions_path, out_dir, *, tolerance=8.0,
             if 'radius_px' in z and len(z['radius_px']):
                 radii.append(np.asarray(z['radius_px'], float))
     global_radius = float(np.nanmedian(np.concatenate(radii))) if radii else 36.0
+    image_cache = {}
+
+    def _image_for(frame):
+        if image_loader is None:
+            return None
+        if frame not in image_cache:
+            image_cache[frame] = image_loader(int(frame))
+        return image_cache[frame]
 
     out_dir.mkdir(parents=True, exist_ok=True)
     seq_out = out_dir / 'sequences' / case_dir.name
@@ -379,14 +395,35 @@ def apply_actions(case_dir, actions_path, out_dir, *, tolerance=8.0,
                 if not np.isfinite(r) or r <= 0:
                     rr = arrays['radius_px'][kept] if kept and 'radius_px' in arrays else []
                     r = float(np.nanmedian(rr)) if len(rr) else global_radius
+                theta = a.get('theta_rad')
+                angle_valid = bool(a.get('angle_valid', False)) and theta is not None
+                if theta is None and image_loader is not None:
+                    try:
+                        image = _image_for(fid)
+                        th, ok, off, area, bright = estimate_marker_orientation(
+                            image, [p])
+                        if bool(ok[0]):
+                            theta = float(th[0])
+                            angle_valid = True
+                    except Exception:
+                        # A missing/unreadable raw frame must not lose the manual
+                        # centre; keep it with an explicit invalid orientation.
+                        angle_valid = False
+                if theta is not None and not np.isfinite(float(theta)):
+                    theta = None
+                    angle_valid = False
                 addition = {'frame': fid, 'op': 'add',
                             'xy_px': [float(p[0]), float(p[1])],
                             'radius_px': float(r),
+                            'theta_rad': theta,
+                            'angle_valid': bool(angle_valid),
                             'reason': a.get('reason', 'manual_add')}
                 additions.append(addition)
                 applied.append({'frame': fid, 'op': 'add',
                                 'xy_px': addition['xy_px'],
-                                'radius_px': addition['radius_px']})
+                                'radius_px': addition['radius_px'],
+                                'angle_valid': addition['angle_valid'],
+                                'theta_rad': addition['theta_rad']})
 
             before = len(original)
             after = len(kept) + len(additions)
@@ -407,7 +444,7 @@ def apply_actions(case_dir, actions_path, out_dir, *, tolerance=8.0,
                 elif key == 'xy_px':
                     parts.append(np.asarray([value['xy_px']], np.float32))
                 else:
-                    default = _field_default(key, 1, value['radius_px'])
+                    default = _field_default(key, 1, value['radius_px'], value)
                     parts.append(default.reshape(1, *arr.shape[1:]))
             new_arrays[key] = np.concatenate(parts, axis=0) if parts else arr[:0]
 
@@ -469,7 +506,7 @@ def apply_actions(case_dir, actions_path, out_dir, *, tolerance=8.0,
         'outputs': [{'file': p.name, 'bytes': p.stat().st_size,
                      'sha256': _sha256(p)} for p in outputs],
         'note': ('Curation preserves automatic segment ids for untouched rows; '
-                 'manual rows have segment_id=-1 and angle_valid=False. '
+                 'manual rows have segment_id=-1; angle_valid is true only if the marker estimator succeeded. '
                  'Re-run the linker before using trajectories.'),
     }
     write_json(seq_out / 'review.json', review)

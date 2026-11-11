@@ -41,7 +41,7 @@ See [`MASK.md`](MASK.md) and [`MANUAL_MASK.md`](MANUAL_MASK.md).
   "conditions": {"frequency_hz": 140.0, "acceleration_g": 2.0},
   "calibration": {"px_per_mm": 5.1558, "source": "cad_affine_assumed", "uncertainty_px_per_mm": null},
   "boundary": {"mode": "mask", "mask": "...", "mask_sha256": "...", "wall_model": "empirical", "wall_band": 1},
-  "code": {"name": "vibrotrack", "version": "0.5.0", "commit": "...", "dirty": false},
+  "code": {"name": "vibrotrack", "version": "0.5.1", "commit": "...", "dirty": false},
   "outputs": [{"file": "chunk_00000_17999.npz", "bytes": 314582971, "sha256": "..."}],
   "qc": {"status": "extracted"},
   "retention": {"raw_path": "<raw volume>/...", "raw_deleted": false},
@@ -121,6 +121,8 @@ A failed sequence keeps its `problems` array; the report is written even when re
 
 The editor writes `review-actions/v1`; `curate` writes `curation/v1` in
 `review.json` and adds a `manual_edit` uint8 column to the curated chunks
-(`1` = human-added, `0` = automatic). Manual rows have `segment_id=-1`,
-`angle_valid=False`, `theta_rad=NaN`; untouched rows keep their automatic
+(`1` = human-added, `0` = automatic). Manual rows have `segment_id=-1`; if
+`curate` is given `--raw --config`, their marker direction is estimated and
+`angle_valid` may be true. If the marker cannot be estimated, the row keeps
+`angle_valid=False`, `theta_rad=NaN`. Untouched rows keep their automatic
 tracking fields. See [`REVIEW.md`](REVIEW.md).

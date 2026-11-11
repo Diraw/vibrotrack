@@ -113,3 +113,26 @@ def test_curate_cli(tmp_path):
     assert cli.main(['curate', '--case-dir', str(case), '--actions', str(actions),
                      '--out', str(out), '--tolerance', '2']) == 0
     assert (out / 'review.json').exists()
+
+
+def test_curate_can_estimate_manual_orientation(tmp_path):
+    case = _make_case(tmp_path)
+    image = np.full((60, 60), 25, np.uint8)
+    yy, xx = np.mgrid[:60, :60]
+    image[(xx - 30) ** 2 + (yy - 30) ** 2 <= 23 ** 2] = 185
+    image[(xx - 30) ** 2 + (yy - 21) ** 2 <= 6 ** 2] = 35
+    actions = tmp_path / 'actions.json'
+    actions.write_text(json.dumps({
+        'schema': 'review-actions/v1',
+        'actions': [{'frame': 1, 'op': 'add', 'xy_px': [30, 30], 'radius_px': 5}],
+    }), encoding='utf8')
+    out = tmp_path / 'curated'
+    review.apply_actions(case, actions, out, tolerance=2.0,
+                         image_loader=lambda _frame: image)
+    with np.load(out / 'sequences' / 'case' / 'chunk_00000_00001.npz',
+                 allow_pickle=False) as z:
+        manual = np.where(z['manual_edit'] == 1)[0]
+        assert len(manual) == 1
+        i = int(manual[0])
+        assert bool(z['angle_valid'][i]) is True
+        assert abs(float(z['theta_rad'][i]) - np.pi / 2) < 0.25

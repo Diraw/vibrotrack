@@ -7,7 +7,7 @@ abstract: >-
   orientations, track ids, a geometry product, and batch-level admission gates.
 authors:
   - name: "Diraw"
-version: 0.5.0
+version: 0.5.1
 date-released: "2026-11-10"
 url: "https://github.com/Diraw/vibrotrack"
 repository-code: "https://github.com/Diraw/vibrotrack"

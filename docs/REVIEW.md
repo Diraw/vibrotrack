@@ -66,7 +66,8 @@ Example action log:
 vibrotrack curate \
   --case-dir batch/sequences/case01 \
   --actions review/case01/review_actions.json \
-  --out curated/case01
+  --out curated/case01 \
+  --raw frames --config apparatus.yaml
 ```
 
 `curate` writes:
@@ -83,8 +84,14 @@ The original `chunk_*.npz` stays unchanged. The curated chunk contains an extra
 `manual_edit` column:
 
 - `0`: automatic detection, tracking fields preserved;
-- `1`: human-added detection, with `segment_id=-1`, `angle_valid=False`, and
-  `theta_rad=NaN`.
+- `1`: human-added detection, with `segment_id=-1`.
+
+If `--raw` and `--config` are supplied, `curate` estimates the dark-marker
+direction from a 47×47 patch around each manually added centre. A valid estimate
+sets `theta_rad` and `angle_valid=True`; if the marker is missing or ambiguous,
+the row keeps `theta_rad=NaN`, `angle_valid=False`. This is an image-based
+estimate, not a fabricated orientation. Without the two options, all manual rows
+remain angle-invalid.
 
 Removed detections are absent from the curated chunk. `review.json` records every
 applied and skipped action, the action file hash, the source chunk hashes, frame
@@ -95,8 +102,8 @@ count changes and the curated output hashes.
 This first version curates **detection rows**, not trajectories. Existing
 `segment_id` values are preserved for untouched rows; manually added rows are
 unlinked. Run the linker on the curated chunks before doing trajectory-level
-analysis. A manual row has no invented orientation: if polar order is needed,
-annotate its marker direction separately.
+analysis. Manual rows can have an estimated marker direction, but if the marker
+is not visible the row is explicitly angle-invalid rather than guessed.
 
 ## Safety rules
 

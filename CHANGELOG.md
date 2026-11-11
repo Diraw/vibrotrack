@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 — 2026-11-11
+
+- The review editor now uses a precise dot cursor over the canvas instead of the
+  crosshair.
+- `curate --raw --config` estimates the dark-marker orientation for human-added
+  centres with the same local centroid rule as the detector. If the marker is not
+  detectable, the manual row remains `angle_valid=False` with `theta_rad=NaN`.
+
 ## 0.5.0 — 2026-11-11
 
 - Added an optional post-extraction review layer. `vibrotrack review` flags frames

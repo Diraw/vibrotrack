@@ -28,7 +28,8 @@
   button:disabled { opacity:.45; cursor:not-allowed; }
   #status { color:var(--muted); margin-left:4px; }
   #canvasWrap { position:relative; background:#080b0f; border:1px solid var(--line); border-radius:8px; overflow:hidden; min-height:240px; display:flex; align-items:center; justify-content:center; }
-  canvas { display:block; max-width:100%; max-height:calc(100vh - 190px); width:auto; height:auto; cursor:crosshair; }
+  canvas { display:block; max-width:100%; max-height:calc(100vh - 190px); width:auto; height:auto; cursor:none; }
+  #cursorDot { position:fixed; display:none; width:7px; height:7px; border-radius:50%; background:var(--cyan); box-shadow:0 0 0 1px #fff, 0 0 5px #000; pointer-events:none; z-index:100; transform:translate(-50%,-50%); }
   #empty { position:absolute; color:var(--muted); text-align:center; padding:28px; pointer-events:none; }
   .help { color:var(--muted); margin-top:10px; font-size:13px; }
   kbd { background:#263646; border:1px solid #40566b; border-radius:4px; padding:1px 5px; font-size:12px; }
@@ -63,6 +64,7 @@
     </div>
     <div id="canvasWrap">
       <canvas id="canvas" width="800" height="600"></canvas>
+      <div id="cursorDot"></div>
       <div id="empty">载入 queue 后，再选择包含帧图片的文件夹</div>
     </div>
     <div class="legend">
@@ -72,7 +74,8 @@
       <span><i class="swatch" style="background:var(--violet)"></i>手动添加</span>
     </div>
     <div class="help">
-      点击空白处补检；点击绿色圆圈删除该颗粒。添加的颗粒只记录中心和半径，朝向留空。
+      画布内使用小圆点光标，便于对准颗粒中心。点击空白处补检；点击绿色圆圈删除该颗粒。
+      添加的颗粒只记录中心和半径；curate 可用局部暗色 marker 估计朝向，失败则保持无效。
       用 <kbd>←</kbd> / <kbd>→</kbd> 切换异常帧。图片不会上传，全部在本地浏览器处理。
       保存后，把 <code>review_actions.json</code> 交给 <code>vibrotrack curate</code>。
     </div>
@@ -315,7 +318,18 @@
     state.mode = mode;
     $('addBtn').classList.toggle('active', mode === 'add');
     $('removeBtn').classList.toggle('active', mode === 'remove');
+    $('cursorDot').style.background = mode === 'add' ? 'var(--cyan)' : 'var(--red)';
   }
+
+  // A small dot is a more precise pointing cursor than a crosshair for
+  // clicking a particle centre. It follows the mouse only inside the canvas.
+  const cursorDot = $('cursorDot');
+  canvas.addEventListener('mouseenter', () => { cursorDot.style.display = 'block'; });
+  canvas.addEventListener('mouseleave', () => { cursorDot.style.display = 'none'; });
+  canvas.addEventListener('mousemove', (ev) => {
+    cursorDot.style.left = ev.clientX + 'px';
+    cursorDot.style.top = ev.clientY + 'px';
+  });
   $('addBtn').onclick = () => setMode('add');
   $('removeBtn').onclick = () => setMode('remove');
   $('undoBtn').onclick = undo;
