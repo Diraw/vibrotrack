@@ -83,6 +83,10 @@ def test_relink_manual_rows_across_chunks_and_preserves_fields(tmp_path):
     assert rec['n_manual_rows'] == 3
     assert rec['n_linked_rows'] == 2
     assert rec['n_gap_rows'] == 0
+    assert len(rec['manual_rows']) == 3
+    assert rec['manual_rows'][0]['segment_id'] == 0
+    assert rec['manual_rows'][0]['link_valid'] is False
+    assert rec['manual_rows'][1]['link_valid'] is True
 
     z1 = _load(out / 'chunk_00000_00001.npz')
     z2 = _load(out / 'chunk_00002_00002.npz')

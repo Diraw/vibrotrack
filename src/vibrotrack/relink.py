@@ -163,6 +163,7 @@ def _link_frames(frames, linker, gap):
     n_linked = 0
     n_gap = 0
     n_manual = 0
+    manual_rows = []
     steps = []
     all_ids = []
 
@@ -220,7 +221,16 @@ def _link_frames(frames, linker, gap):
         rec['dtheta_rad'] = np.asarray(dtheta, np.float32)
 
         if 'manual_edit' in rec:
-            n_manual += int(np.asarray(rec['manual_edit'], np.uint8).sum())
+            medit = np.asarray(rec['manual_edit'], np.uint8)
+            n_manual += int(medit.sum())
+            for j in np.where(medit == 1)[0]:
+                manual_rows.append({
+                    'frame': int(fid),
+                    'xy_px': [float(v) for v in rec['xy_px'][j]],
+                    'segment_id': int(rec['segment_id'][j]),
+                    'link_valid': bool(rec['link_valid'][j]),
+                    'gap_frames': int(rec['gap_frames'][j]),
+                })
         n_linked += int(link_valid.sum())
         n_gap += int((gap_frames > 1).sum())
         valid_steps = np.asarray(step, float)
@@ -240,6 +250,7 @@ def _link_frames(frames, linker, gap):
         'n_linked_rows': int(n_linked),
         'n_gap_rows': int(n_gap),
         'n_manual_rows': int(n_manual),
+        'manual_rows': manual_rows,
         'link_fraction': float(n_linked / total_rows) if total_rows else 0.0,
         'median_step_px': float(np.median(finite_steps)) if len(finite_steps) else None,
     }

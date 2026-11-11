@@ -1,3 +1,8 @@
+## 0.6.1 — 2026-11-11
+
+- record `manual_rows` (frame, position, final segment id, link flag, gap) in
+  `relink.json` so curated rows can be audited after re-linking.
+
 ## 0.6.0 — 2026-11-11
 
 - add `vibrotrack relink`: recompute trajectory identities on an existing or

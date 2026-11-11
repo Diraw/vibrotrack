@@ -41,7 +41,7 @@ See [`MASK.md`](MASK.md) and [`MANUAL_MASK.md`](MANUAL_MASK.md).
   "conditions": {"frequency_hz": 140.0, "acceleration_g": 2.0},
   "calibration": {"px_per_mm": 5.1558, "source": "cad_affine_assumed", "uncertainty_px_per_mm": null},
   "boundary": {"mode": "mask", "mask": "...", "mask_sha256": "...", "wall_model": "empirical", "wall_band": 1},
-  "code": {"name": "vibrotrack", "version": "0.6.0", "commit": "...", "dirty": false},
+  "code": {"name": "vibrotrack", "version": "0.6.1", "commit": "...", "dirty": false},
   "outputs": [{"file": "chunk_00000_17999.npz", "bytes": 314582971, "sha256": "..."}],
   "qc": {"status": "extracted"},
   "retention": {"raw_path": "<raw volume>/...", "raw_deleted": false},
