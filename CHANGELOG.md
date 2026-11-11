@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.1 — 2026-11-12
+
+- `refine` no longer re-links the whole case. The filled rows are spliced into
+  the existing identities: a direct link when the hole is one frame, a
+  gap-closing row otherwise, the two fragments of a boundary hole unioned under
+  the earlier id, and every id renumbered in order of first appearance. Inserted
+  rows shift the global row numbers that `previous_detection` points at, so those
+  are remapped, and `dtheta_rad` is recomputed from the final predecessor for
+  every direct link. G0: 109 s -> 21 s, bit-identical to a full re-link on all
+  26 arrays of the chunk;
+- add `refine --full-relink` to run the linker over the whole case, which is the
+  audit path the splice is checked against;
+- vectorise `find_gaps`: it looped over 4.6 M rows in Python and sorted one list
+  per track (8 s), now it works on the concatenated arrays;
+- `detect.files_for` lists the frame directory with `os.scandir`; `Path.is_file()`
+  cost one stat per frame (3.4 ms x 9000 = 31 s on the USB archive, paid by every
+  `extract`/`refine` run);
+- `refine.json` and `dataset.json` record `link_mode` (`incremental` or `full`).
+
 ## 0.9.0 — 2026-11-12
 
 - new `vibrotrack refine`: recovers particles that a linked track proves must

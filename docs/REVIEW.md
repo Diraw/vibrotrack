@@ -25,8 +25,9 @@ vibrotrack refine \
 * a new row is written only if the fit converges, keeps >=14 of 64 rays, has
   edge rmse <=1.2 px and lands within 12 px of the prediction; otherwise the
   hole stays for a human;
-* new rows carry `recovered=1`; existing rows are copied unchanged; the case is
-  re-linked before writing;
+* new rows carry `recovered=1`; existing rows are copied unchanged; the filled
+  rows are spliced into the existing identities, so only the rows next to a hole
+  change (`--full-relink` runs the linker over the whole case instead, for audit);
 * `refine.json` records every attempt (prediction, fitted centre, rays, rmse,
   offset, reason) so a rejected attempt is auditable.
 

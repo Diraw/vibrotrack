@@ -231,12 +231,13 @@ def _cmd_refine(args):
     rec, seq_out = refine_mod.refine_case(
         args.case_dir, args.out, args.raw, max_gap=args.max_gap, radius=args.radius,
         min_rays=args.min_rays, max_rmse=args.max_rmse, max_offset=args.max_offset,
-        min_sep=args.min_sep, limit=args.limit, force=args.force, verbose=args.verbose)
+        min_sep=args.min_sep, limit=args.limit, force=args.force, verbose=args.verbose,
+        incremental=not args.full_relink)
     print('case:      %s' % rec['case'])
     print('gaps:      %d; attempts: %d; recovered: %d; rejected: %d' % (
         rec['n_gaps'], rec['n_attempts'], rec['n_recovered'], rec['n_rejected']))
-    print('rows:      %d (was linked again with %s, gap %d)' % (
-        rec['n_detections'], rec['linker'], rec['link_gap']))
+    print('rows:      %d (%s re-link, linker %s, gap %d)' % (
+        rec['n_detections'], rec.get('link_mode', 'full'), rec['linker'], rec['link_gap']))
     print('tracks:    %d; gap rows: %d' % (rec['n_tracks'], rec['n_gap_rows']))
     print('out:       %s' % seq_out)
     print('refine:    %s' % (seq_out / 'refine.json'))
@@ -489,6 +490,8 @@ def build_parser():
                    help='reject a fit closer than this many radii to an existing centre (default 1.6)')
     p.add_argument('--limit', type=int, default=0, help='only attempt the first N gaps')
     p.add_argument('--verbose', action='store_true', help='print every attempt')
+    p.add_argument('--full-relink', action='store_true',
+                   help='re-link every frame instead of splicing the filled holes (slow; audit only)')
     p.add_argument('--force', action='store_true', help='replace an existing output case')
     p.set_defaults(func=_cmd_refine)
 

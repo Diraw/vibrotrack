@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from vibrotrack import refine as RF
+from vibrotrack import relink as RL
 
 R = 37.0
 
@@ -155,3 +156,67 @@ def test_refine_case_end_to_end(tmp_path):
     assert np.hypot(rec_xy[0] - 138.0, rec_xy[1] - 126.0) < 3.0
     assert json.loads((Path(out) / 'refine.json').read_text(encoding='utf8'))[
         'n_recovered'] == 1
+
+
+def _write_case(case, rows):
+    frames = _frames(rows)
+    case.mkdir(parents=True, exist_ok=True)
+    ids = np.asarray([f for f, _ in frames], np.int64)
+    counts = [len(rec['xy_px']) for _, rec in frames]
+    arrays = {'frame_ids': ids,
+              'frame_offsets': np.concatenate([[0], np.cumsum(counts)]).astype(np.int32)}
+    for k in frames[0][1]:
+        arrays[k] = np.concatenate([rec[k] for _, rec in frames])
+    arrays['schema_version'] = np.asarray('chunk/v1')
+    np.savez_compressed(case / 'chunk_00000_0005.npz', **arrays)
+    (case / 'run_config.json').write_text(
+        json.dumps({'linker': 'v2', 'link_gap': 5, 'scale_levels': [0, 255]}),
+        encoding='utf8')
+    return case
+
+
+def _same(a, b):
+    if a.dtype.kind == 'f':
+        return np.array_equal(a, b, equal_nan=True)
+    return np.array_equal(a, b)
+
+
+def test_incremental_splice_matches_full_relink(tmp_path):
+    """Splicing the filled holes must reproduce the full re-link bit for bit."""
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    tracks = {
+        0: [(150, 150), (156, 152), (162, 154), (168, 156), (174, 158), (180, 160)],
+        1: [(450, 150), (456, 152), (462, 154), (468, 156), (474, 158), (480, 160)],
+        2: [(150, 500), (156, 502), (162, 504), (168, 506), (174, 508), (180, 510)],
+    }
+    for fid in range(6):
+        centers = [tracks[t][fid] for t in tracks]
+        assert cv2.imwrite(str(raw / ('f_%04d.png' % fid)), _frame(centers, size=900))
+
+    rows = [
+        (0, [(tracks[0][0], 0), (tracks[1][0], 1), (tracks[2][0], 2)]),
+        (1, [(tracks[1][1], 1), (tracks[2][1], 2)]),                 # interior hole in 0
+        (2, [(tracks[0][2], 0), (tracks[2][2], 2)]),                 # boundary hole starts
+        (3, [(tracks[0][3], 0), (tracks[2][3], 2)]),
+        (4, [(tracks[0][4], 0), (tracks[1][4], 4), (tracks[2][4], 2)]),
+        (5, [(tracks[0][5], 0), (tracks[1][5], 4)]),                 # 2 stops at 3 (tail)
+    ]
+    raw_case = _write_case(tmp_path / 'raw_case' / 'sequences' / 'demo', rows)
+    _, case = RL.relink_case(raw_case, tmp_path / 'linked')
+
+    inc, inc_out = RF.refine_case(case, tmp_path / 'inc', raw, max_gap=5)
+    full, full_out = RF.refine_case(case, tmp_path / 'full', raw, max_gap=5,
+                                    incremental=False)
+    assert inc['n_recovered'] == full['n_recovered'] > 0
+    assert inc['link_mode'] == 'incremental' and full['link_mode'] == 'full'
+
+    with np.load(Path(inc_out) / 'chunk_00000_0005.npz') as a, \
+            np.load(Path(full_out) / 'chunk_00000_0005.npz') as b:
+        assert sorted(a.files) == sorted(b.files)
+        for key in a.files:
+            assert _same(a[key], b[key]), key
+
+    for key in ('n_detections', 'n_tracks', 'n_linked_rows', 'n_gap_rows',
+                'n_frames'):
+        assert inc[key] == full[key], key
