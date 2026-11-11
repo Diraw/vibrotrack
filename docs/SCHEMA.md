@@ -41,7 +41,7 @@ See [`MASK.md`](MASK.md) and [`MANUAL_MASK.md`](MANUAL_MASK.md).
   "conditions": {"frequency_hz": 140.0, "acceleration_g": 2.0},
   "calibration": {"px_per_mm": 5.1558, "source": "cad_affine_assumed", "uncertainty_px_per_mm": null},
   "boundary": {"mode": "mask", "mask": "...", "mask_sha256": "...", "wall_model": "empirical", "wall_band": 1},
-  "code": {"name": "vibrotrack", "version": "0.4.0", "commit": "...", "dirty": false},
+  "code": {"name": "vibrotrack", "version": "0.5.0", "commit": "...", "dirty": false},
   "outputs": [{"file": "chunk_00000_17999.npz", "bytes": 314582971, "sha256": "..."}],
   "qc": {"status": "extracted"},
   "retention": {"raw_path": "<raw volume>/...", "raw_deleted": false},
@@ -98,3 +98,29 @@ A failed sequence keeps its `problems` array; the report is written even when re
   `run_config.json`, `dataset.json` and compares with `index.json`.
 - `archive` copies the batch and writes `FROZEN.json` with a fresh hash of every file.
   Never edit a frozen directory; create a new batch instead.
+
+## Review / curation products
+
+`vibrotrack review` writes `review-queue/v1`:
+
+```json
+{
+  "schema": "review-queue/v1",
+  "case": "case01",
+  "expected_count": 515,
+  "count_stats": {"min": 514, "max": 515, "median": 515.0, "mode": 515},
+  "frames": [
+    {"frame": 43, "count": 514, "delta": -1,
+     "image": "frames/case01_frame00043.png",
+     "detections": [{"xy_px": [929.3, 90.7], "radius_px": 36.6,
+                     "theta_rad": 1.28, "angle_valid": true,
+                     "confidence": 0.49, "segment_id": 1}]}
+  ]
+}
+```
+
+The editor writes `review-actions/v1`; `curate` writes `curation/v1` in
+`review.json` and adds a `manual_edit` uint8 column to the curated chunks
+(`1` = human-added, `0` = automatic). Manual rows have `segment_id=-1`,
+`angle_valid=False`, `theta_rad=NaN`; untouched rows keep their automatic
+tracking fields. See [`REVIEW.md`](REVIEW.md).

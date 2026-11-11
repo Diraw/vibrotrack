@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 — 2026-11-11
+
+- Added an optional post-extraction review layer. `vibrotrack review` flags frames
+  whose particle count differs from the run mode, exports the review queue and
+  native-resolution frames.
+- Added `tools/review_editor.html`: a local, no-upload editor for adding missing
+  centres and removing false detections.
+- Added `vibrotrack curate`: applies a `review-actions/v1` log to a separate
+  curated copy, with `manual_edit`, `review.json`, source/action/output hashes and
+  unchanged original chunks.
+- Manual additions use the queue median radius, `segment_id=-1`, `angle_valid=False`
+  and `theta_rad=NaN`; trajectory linker runs are intentionally separate.
+
 ## 0.4.0 — 2026-11-11
 
 - Added `vibrotrack plot`: render selected raw frames with fitted circles, centres

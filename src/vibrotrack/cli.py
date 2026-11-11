@@ -15,6 +15,7 @@ from . import boundary
 from . import detect as X
 from . import geometry as G
 from . import pipeline
+from . import review as review_mod
 from . import schema
 from . import visualize
 from .config import load_config
@@ -132,6 +133,57 @@ def _cmd_frame(args):
     out.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(img).save(out)
     print('frame:   %s  (%dx%d) -> %s' % (files[index].name, img.shape[1], img.shape[0], out))
+    return 0
+
+
+def _cmd_review(args):
+    """Build a count-anomaly review queue without touching detector output."""
+    cfg = load_config(args.config, base_dir=args.base_dir)
+    raw = Path(args.raw).expanduser()
+    files = X.files_for({'path': str(raw), 'extensions': tuple(cfg.extensions)})
+    if not files:
+        raise FileNotFoundError('no frames found in %s' % args.raw)
+    case_dir = Path(args.case_dir).expanduser().resolve()
+    out_dir = Path(args.out).expanduser()
+    if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
+        raise FileExistsError('review output is not empty (use --force): %s' % out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir = out_dir / 'frames'
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    queue, selected = review_mod.build_queue(
+        case_dir, expected_count=args.expected_n, max_frames=args.max_frames)
+    queue['source_chunks'] = [
+        {'file': p.name, 'sha256': review_mod._sha256(p)}
+        for p in review_mod._chunks(case_dir)]
+    for item in queue['frames']:
+        fi = int(item['frame'])
+        if fi < 0 or fi >= len(files):
+            raise IndexError('frame %d outside raw frame list 0..%d' % (fi, len(files) - 1))
+        image = X.read_image(files[fi], cfg.scale_levels)
+        image_name = 'frames/%s_frame%05d.png' % (case_dir.name, fi)
+        Image.fromarray(image).save(out_dir / image_name)
+        item['image'] = image_name
+        item['image_shape'] = [int(image.shape[0]), int(image.shape[1])]
+    review_mod.write_json(out_dir / 'review_queue.json', queue)
+    print('case:     %s' % case_dir.name)
+    print('frames:   %d flagged / %d total' % (len(queue['frames']), queue['count_stats']['n_frames']))
+    print('expected: %d (mode); histogram %s' % (
+        queue['expected_count'], queue['count_stats']['histogram']))
+    print('queue:    %s' % (out_dir / 'review_queue.json'))
+    print('images:   %s' % frames_dir)
+    return 0
+
+
+def _cmd_curate(args):
+    """Apply a review action log to a separate curated copy."""
+    rec = review_mod.apply_actions(
+        args.case_dir, args.actions, args.out,
+        tolerance=args.tolerance, force=args.force)
+    print('applied: %d; skipped: %d' % (rec['n_applied'], rec['n_skipped']))
+    print('changes: %s' % rec['frame_changes'])
+    print('review:  %s' % (Path(args.out).resolve() / 'review.json'))
+    print('note:    %s' % rec['note'])
     return 0
 
 
@@ -318,6 +370,29 @@ def build_parser():
     p.add_argument('--max-size', type=int, default=0, help='max output side in px; 0 = original (use original when exporting a mask)')
     p.add_argument('--out', required=True, help='output PNG/JPEG')
     p.set_defaults(func=_cmd_frame)
+
+    p = sub.add_parser('review', help='build a review queue for frames with anomalous particle counts')
+    p.add_argument('--raw', required=True, help='directory of TIFF frames')
+    p.add_argument('--case-dir', required=True,
+                   help='.../batch/sequences/<case> containing chunk_*.npz')
+    p.add_argument('--config', required=True, help='apparatus YAML')
+    p.add_argument('--base-dir', default=None)
+    p.add_argument('--out', required=True, help='review directory (queue JSON + frames/)')
+    p.add_argument('--expected-n', type=int, default=None,
+                   help='expected particle count; default: run mode')
+    p.add_argument('--max-frames', type=int, default=0,
+                   help='optional cap on flagged frames (0 = all)')
+    p.add_argument('--force', action='store_true', help='replace a non-empty output directory')
+    p.set_defaults(func=_cmd_review)
+
+    p = sub.add_parser('curate', help='apply review add/remove actions to a separate curated copy')
+    p.add_argument('--case-dir', required=True)
+    p.add_argument('--actions', required=True, help='review_actions.json from the editor')
+    p.add_argument('--out', required=True, help='new curated case directory')
+    p.add_argument('--tolerance', type=float, default=8.0,
+                   help='max distance (px) for matching a removal or duplicate')
+    p.add_argument('--force', action='store_true', help='replace a non-empty output directory')
+    p.set_defaults(func=_cmd_curate)
 
     p = sub.add_parser('plot', help='render raw frames with fitted particles and orientation ticks')
     p.add_argument('--raw', required=True, help='directory of TIFF frames')

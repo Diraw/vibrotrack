@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>vibrotrack review</title>
+<style>
+  :root { color-scheme: dark; --bg:#11161d; --panel:#1a222c; --line:#304050; --fg:#e8eef5; --muted:#9aabba; --green:#20d67a; --orange:#ffb02e; --red:#ff5c64; --cyan:#39d5ff; --violet:#d78cff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); background:#141b23; }
+  h1 { font-size:16px; margin:0 0 8px; font-weight:650; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .muted { color:var(--muted); }
+  .controls label { display:flex; gap:6px; align-items:center; color:var(--muted); }
+  input[type=file] { color:var(--fg); max-width:330px; }
+  main { display:grid; grid-template-columns:250px minmax(0,1fr); min-height:calc(100vh - 92px); }
+  aside { border-right:1px solid var(--line); background:var(--panel); padding:12px; overflow:auto; max-height:calc(100vh - 92px); }
+  #frameList { list-style:none; padding:0; margin:10px 0 0; }
+  #frameList li { padding:7px 8px; border:1px solid transparent; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; gap:8px; }
+  #frameList li:hover { border-color:var(--line); }
+  #frameList li.active { background:#243245; border-color:#52708e; }
+  #frameList .delta { color:var(--red); font-variant-numeric:tabular-nums; }
+  section { padding:12px 16px 18px; min-width:0; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+  button { background:#263646; color:var(--fg); border:1px solid #40566b; border-radius:6px; padding:7px 11px; cursor:pointer; }
+  button:hover { background:#31475c; }
+  button.active { background:#1e6f4b; border-color:var(--green); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  #status { color:var(--muted); margin-left:4px; }
+  #canvasWrap { position:relative; background:#080b0f; border:1px solid var(--line); border-radius:8px; overflow:hidden; min-height:240px; display:flex; align-items:center; justify-content:center; }
+  canvas { display:block; max-width:100%; max-height:calc(100vh - 190px); width:auto; height:auto; cursor:crosshair; }
+  #empty { position:absolute; color:var(--muted); text-align:center; padding:28px; pointer-events:none; }
+  .help { color:var(--muted); margin-top:10px; font-size:13px; }
+  kbd { background:#263646; border:1px solid #40566b; border-radius:4px; padding:1px 5px; font-size:12px; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:6px; }
+  .swatch { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:4px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<header>
+  <h1>vibrotrack · review / curation</h1>
+  <div class="row controls">
+    <label>review_queue.json <input id="queueInput" type="file" accept=".json,application/json"></label>
+    <label>review/frames 文件夹 <input id="folderInput" type="file" webkitdirectory multiple></label>
+    <button id="saveBtn" disabled>保存 review_actions.json</button>
+    <span id="loadState" class="muted">先选择 queue 和 frames 文件夹</span>
+  </div>
+</header>
+<main>
+  <aside>
+    <div><strong>异常帧</strong></div>
+    <div id="stats" class="muted" style="margin-top:5px">未载入</div>
+    <ul id="frameList"></ul>
+  </aside>
+  <section>
+    <div class="toolbar">
+      <button id="addBtn" class="active">添加颗粒（点击空白处）</button>
+      <button id="removeBtn">删除颗粒（点击圆圈）</button>
+      <button id="undoBtn" disabled>撤销</button>
+      <button id="prevBtn" disabled>上一帧</button>
+      <button id="nextBtn" disabled>下一帧</button>
+      <span id="status"></span>
+    </div>
+    <div id="canvasWrap">
+      <canvas id="canvas" width="800" height="600"></canvas>
+      <div id="empty">载入 queue 后，再选择包含帧图片的文件夹</div>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--green)"></i>自动检测</span>
+      <span><i class="swatch" style="background:var(--orange)"></i>朝向</span>
+      <span><i class="swatch" style="background:var(--red)"></i>已删除</span>
+      <span><i class="swatch" style="background:var(--violet)"></i>手动添加</span>
+    </div>
+    <div class="help">
+      点击空白处补检；点击绿色圆圈删除该颗粒。添加的颗粒只记录中心和半径，朝向留空。
+      用 <kbd>←</kbd> / <kbd>→</kbd> 切换异常帧。图片不会上传，全部在本地浏览器处理。
+      保存后，把 <code>review_actions.json</code> 交给 <code>vibrotrack curate</code>。
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('canvas');
+  const ctx = canvas.getContext('2d');
+  const state = {
+    queue: null,
+    files: new Map(),
+    images: new Map(),
+    frameIndex: 0,
+    mode: 'add',
+    edits: new Map(),   // frame -> {removed:Set<number>, added:[{xy_px,radius_px}]}
+    history: [],
+    imageToken: 0,
+  };
+
+  function frameKey(f) { return String(f); }
+  function editFor(f) {
+    const k = frameKey(f);
+    if (!state.edits.has(k)) state.edits.set(k, {removed: new Set(), added: []});
+    return state.edits.get(k);
+  }
+  function currentFrame() {
+    if (!state.queue || !state.queue.frames.length) return null;
+    return state.queue.frames[state.frameIndex];
+  }
+  function setLoad(msg, bad) {
+    $('loadState').textContent = msg;
+    $('loadState').style.color = bad ? 'var(--red)' : 'var(--muted)';
+  }
+
+  function remember() {
+    state.history.push(JSON.stringify({
+      edits: [...state.edits.entries()].map(([k, v]) => [k, {
+        removed: [...v.removed], added: v.added
+      }])
+    }));
+    if (state.history.length > 80) state.history.shift();
+    $('undoBtn').disabled = false;
+  }
+  function undo() {
+    const raw = state.history.pop();
+    if (!raw) return;
+    const d = JSON.parse(raw);
+    state.edits = new Map(d.edits.map(([k, v]) => [k, {
+      removed: new Set(v.removed), added: v.added
+    }]));
+    $('undoBtn').disabled = state.history.length === 0;
+    draw();
+    updateStatus();
+  }
+
+  function buildFrameList() {
+    const list = $('frameList');
+    list.innerHTML = '';
+    state.queue.frames.forEach((f, i) => {
+      const li = document.createElement('li');
+      li.dataset.index = String(i);
+      li.innerHTML = `<span>frame ${f.frame}</span><span class="delta">${f.delta > 0 ? '+' : ''}${f.delta}</span>`;
+      li.addEventListener('click', () => selectFrame(i));
+      list.appendChild(li);
+    });
+  }
+
+  function selectFrame(i) {
+    if (!state.queue || i < 0 || i >= state.queue.frames.length) return;
+    state.frameIndex = i;
+    [...$('frameList').children].forEach((li, j) => li.classList.toggle('active', j === i));
+    $('prevBtn').disabled = i === 0;
+    $('nextBtn').disabled = i === state.queue.frames.length - 1;
+    draw();
+    updateStatus();
+  }
+
+  function imageForFrame(f, token) {
+    const name = (f.image || '').split('/').pop();
+    const file = state.files.get(name) || state.files.get(f.image);
+    if (!file) {
+      setLoad('缺少 frame ' + f.frame + ' 的图片；请选择 review/frames 文件夹', true);
+      return;
+    }
+    const cached = state.images.get(name);
+    if (cached) {
+      if (token === state.imageToken) setLoad('已载入 ' + name);
+      drawWithImage(cached);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      state.images.set(name, img);
+      if (token === state.imageToken) {
+        setLoad('已载入 ' + name);
+        drawWithImage(img);
+      }
+    };
+    img.onerror = () => setLoad('无法读取图片：' + name, true);
+    img.src = url;
+  }
+
+  function drawWithImage(img) {
+    const f = currentFrame();
+    if (!f) return;
+    const qshape = f.image_shape || [img.naturalHeight, img.naturalWidth];
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    ctx.save();
+    // If the exported image was resized, map queue coordinates into it.
+    const sx = canvas.width / qshape[1];
+    const sy = canvas.height / qshape[0];
+    ctx.scale(sx, sy);
+    const ed = editFor(f.frame);
+    const auto = f.detections || [];
+    auto.forEach((d, idx) => {
+      const p = d.xy_px;
+      const r = Number(d.radius_px) || Number(state.queue.median_radius_px) || 36;
+      if (ed.removed.has(idx)) {
+        ctx.strokeStyle = '#ff5c64'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.arc(p[0], p[1], r + 2, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(p[0] - r * .5, p[1] - r * .5); ctx.lineTo(p[0] + r * .5, p[1] + r * .5);
+        ctx.moveTo(p[0] + r * .5, p[1] - r * .5); ctx.lineTo(p[0] - r * .5, p[1] + r * .5);
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = '#20d67a'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = '#ffe25a';
+        ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, Math.PI * 2); ctx.fill();
+        const theta = Number(d.theta_rad);
+        if (d.angle_valid !== false && Number.isFinite(theta)) {
+          ctx.strokeStyle = '#ffb02e'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(p[0], p[1]);
+          // y-up angle in image coordinates: MINUS sin(theta).
+          ctx.lineTo(p[0] + Math.cos(theta) * r * .95,
+                     p[1] - Math.sin(theta) * r * .95);
+          ctx.stroke();
+        }
+      }
+    });
+    ed.added.forEach((d) => {
+      const p = d.xy_px, r = Number(d.radius_px) || 36;
+      ctx.strokeStyle = '#d78cff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = '#d78cff';
+      ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#d78cff'; ctx.font = '11px system-ui'; ctx.fillText('manual', p[0] + r + 4, p[1] - 3);
+    });
+    ctx.restore();
+  }
+
+  function draw() {
+    const f = currentFrame();
+    if (!f) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      $('empty').style.display = '';
+      return;
+    }
+    $('empty').style.display = 'none';
+    const token = ++state.imageToken;
+    imageForFrame(f, token);
+  }
+
+  function updateStatus() {
+    const f = currentFrame();
+    if (!f) { $('status').textContent = ''; return; }
+    const ed = editFor(f.frame);
+    const current = (f.detections || []).length - ed.removed.size + ed.added.length;
+    $('status').textContent = `auto ${f.count} → current ${current}  (add ${ed.added.length}, remove ${ed.removed.size})`;
+  }
+
+  function canvasPoint(ev) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * canvas.width / rect.width;
+    const y = (ev.clientY - rect.top) * canvas.height / rect.height;
+    const f = currentFrame();
+    const qshape = f.image_shape || [canvas.height, canvas.width];
+    return [x * qshape[1] / canvas.width, y * qshape[0] / canvas.height];
+  }
+
+  function nearestDetection(ed, point) {
+    let best = -1, bestD = Infinity;
+    (currentFrame().detections || []).forEach((d, i) => {
+      if (ed.removed.has(i)) return;
+      const dx = d.xy_px[0] - point[0], dy = d.xy_px[1] - point[1];
+      const dist = Math.hypot(dx, dy);
+      if (dist < bestD) { bestD = dist; best = i; }
+    });
+    return [best, bestD];
+  }
+
+  canvas.addEventListener('click', (ev) => {
+    const f = currentFrame();
+    if (!f) return;
+    const ed = editFor(f.frame);
+    const p = canvasPoint(ev);
+    if (state.mode === 'add') {
+      const [near, dist] = nearestDetection(ed, p);
+      const minDist = Number(state.queue.median_radius_px) || 36;
+      if (near >= 0 && dist < minDist * 1.4) {
+        setLoad('这里已有检测；切到删除模式可删除它', true);
+        return;
+      }
+      remember();
+      ed.added.push({xy_px: p, radius_px: Number(state.queue.median_radius_px) || 36});
+      draw(); updateStatus();
+    } else {
+      const [near, dist] = nearestDetection(ed, p);
+      const r = near >= 0 ? (Number(f.detections[near].radius_px) || 36) : 36;
+      if (near >= 0 && dist <= r * 1.25) {
+        remember();
+        ed.removed.add(near);
+        draw(); updateStatus();
+      } else {
+        // Clicking an added row removes that manual addition.
+        let best = -1, bestD = Infinity;
+        ed.added.forEach((d, i) => {
+          const dd = Math.hypot(d.xy_px[0] - p[0], d.xy_px[1] - p[1]);
+          if (dd < bestD) { bestD = dd; best = i; }
+        });
+        if (best >= 0 && bestD <= (Number(ed.added[best].radius_px) || 36) * 1.25) {
+          remember(); ed.added.splice(best, 1); draw(); updateStatus();
+        } else {
+          setLoad('点击位置附近没有检测圆', true);
+        }
+      }
+    }
+  });
+
+  function setMode(mode) {
+    state.mode = mode;
+    $('addBtn').classList.toggle('active', mode === 'add');
+    $('removeBtn').classList.toggle('active', mode === 'remove');
+  }
+  $('addBtn').onclick = () => setMode('add');
+  $('removeBtn').onclick = () => setMode('remove');
+  $('undoBtn').onclick = undo;
+  $('prevBtn').onclick = () => selectFrame(state.frameIndex - 1);
+  $('nextBtn').onclick = () => selectFrame(state.frameIndex + 1);
+  window.addEventListener('keydown', (ev) => {
+    if (!state.queue) return;
+    if (ev.key === 'ArrowLeft') selectFrame(state.frameIndex - 1);
+    if (ev.key === 'ArrowRight') selectFrame(state.frameIndex + 1);
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
+  });
+
+  $('folderInput').addEventListener('change', () => {
+    state.files.clear();
+    for (const f of $('folderInput').files) {
+      state.files.set(f.name, f);
+      if (f.webkitRelativePath) state.files.set(f.webkitRelativePath, f);
+    }
+    setLoad(`${state.files.size} 个图片文件可选`);
+    draw();
+  });
+
+  $('queueInput').addEventListener('change', async () => {
+    const file = $('queueInput').files[0];
+    if (!file) return;
+    try {
+      const q = JSON.parse(await file.text());
+      if (q.schema !== 'review-queue/v1') throw new Error('schema 不是 review-queue/v1');
+      state.queue = q;
+      state.edits.clear();
+      state.history = [];
+      state.frameIndex = 0;
+      $('undoBtn').disabled = true;
+      $('saveBtn').disabled = false;
+      buildFrameList();
+      $('stats').textContent = `${q.case} · ${q.frames.length}/${q.count_stats.n_frames} 帧 · 期望 ${q.expected_count} · 中位半径 ${q.median_radius_px?.toFixed?.(2) ?? q.median_radius_px} px`;
+      selectFrame(0);
+      setLoad('queue 已载入；请选择 review/frames 文件夹');
+    } catch (err) {
+      state.queue = null; state.edits.clear(); $('saveBtn').disabled = true;
+      $('stats').textContent = '未载入';
+      $('frameList').innerHTML = '';
+      setLoad('queue 读取失败：' + err.message, true);
+    }
+  });
+
+  $('saveBtn').onclick = () => {
+    if (!state.queue) return;
+    const actions = [];
+    for (const f of state.queue.frames) {
+      const ed = editFor(f.frame);
+      for (const idx of [...ed.removed].sort((a, b) => a - b)) {
+        const d = f.detections[idx];
+        actions.push({frame: f.frame, op: 'remove', xy_px: [d.xy_px[0], d.xy_px[1]], reason: 'manual_remove'});
+      }
+      for (const d of ed.added) {
+        actions.push({frame: f.frame, op: 'add', xy_px: [d.xy_px[0], d.xy_px[1]], radius_px: d.radius_px, reason: 'manual_add'});
+      }
+    }
+    const out = {
+      schema: 'review-actions/v1',
+      case: state.queue.case,
+      created_at: new Date().toISOString(),
+      expected_count: state.queue.expected_count,
+      actions: actions,
+    };
+    const blob = new Blob([JSON.stringify(out, null, 2) + '\n'], {type: 'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'review_actions.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    setLoad(`已生成 ${actions.length} 条动作`);
+  };
+})();
+</script>
+</body>
+</html>

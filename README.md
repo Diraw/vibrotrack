@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.4.0"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.5.0"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -160,6 +160,29 @@ vibrotrack plot \
 `(cx + r*cos(theta), cy - r*sin(theta))`。`plot` 已固定使用这个约定，
 细节见 [`docs/OVERLAY.md`](docs/OVERLAY.md)。
 
+### 8. 可选的人工 review / curation
+
+自动提取之后，只把计数异常的帧交给人工复核；原始 chunk 不改。
+
+```bash
+vibrotrack review \
+  --raw frames \
+  --case-dir batch/sequences/case01 \
+  --config apparatus.yaml \
+  --out review/case01
+
+# 浏览器打开 tools/review_editor.html，载入 queue 和 frames 文件夹
+# 导出 review_actions.json 后：
+vibrotrack curate \
+  --case-dir batch/sequences/case01 \
+  --actions review/case01/review_actions.json \
+  --out curated/case01
+```
+
+人工补检的颗粒写入独立的 curated 数据，`manual_edit=1`、`angle_valid=False`，
+并保留 `review.json` 审计记录。第一版只整理检测行，不重新链接轨迹；轨迹分析前
+需要在 curated 数据上重跑 linker。详见 [`docs/REVIEW.md`](docs/REVIEW.md)。
+
 ## 输出格式
 
 ### `chunk_*.npz`
@@ -181,6 +204,7 @@ vibrotrack plot \
 | `previous_detection` | 上一帧对应检测的全局行号；`-1` 表示无 |
 | `link_valid` | 是否为直接链接（gap=1） |
 | `step_px` / `dtheta_rad` | 帧间位移/转角 |
+| `manual_edit` | 仅 curated 数据：`1` = 人工补检，`0` = 自动检测 |
 | `frame_ids` | 本 chunk 覆盖的帧号 |
 | `frame_offsets` | 长度 `n_frames+1` 的行分割 |
 
@@ -247,7 +271,7 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
 CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.4.0）
+## 已知限制（v0.5.0）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。
