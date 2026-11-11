@@ -491,7 +491,7 @@ def build_parser():
     p.add_argument('--limit', type=int, default=0, help='only attempt the first N gaps')
     p.add_argument('--verbose', action='store_true', help='print every attempt')
     p.add_argument('--full-relink', action='store_true',
-                   help='re-link every frame instead of splicing the filled holes (slow; audit only)')
+                   help='explicitly request reference re-linking (currently always used for correctness)')
     p.add_argument('--force', action='store_true', help='replace an existing output case')
     p.set_defaults(func=_cmd_refine)
 

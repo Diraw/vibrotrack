@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — correctness before performance
+
+- Withdraw local identity splicing: a recovered detection changes EMA velocity
+  and can alter subsequent Hungarian competition. G0 equivalence did not prove
+  generic equivalence. Both the default path and compatibility splice entry point
+  now replay the reference linker; record the fallback reason.
+- Fix tail recovery using the maximum input frame, including empty trailing
+  frames, instead of the last row after sorting by identity.
+- Keep distinct boundary-target predictions until pixel fitting. Premature
+  source/span deduplication could reject a valid recovery without attempting it.
+- Add adversarial regressions for EMA competition, partial/long recovery,
+  boundary chains, empty tails and alternate target seeds.
+
 ## 0.9.2 — 2026-11-12
 
 - `refine` now writes a complete batch: `masks/`, `apparatus.yaml` and the batch

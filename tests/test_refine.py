@@ -101,6 +101,19 @@ def test_fit_local_converges_from_an_offset_seed():
     assert fit['rmse'] <= 1.2
 
 
+@pytest.mark.parametrize('rows, expected', [
+    ([(0, [((100, 100), 0), ((400, 100), 1)]),
+      (1, [((106, 100), 0), ((406, 100), 1)]),
+      (2, [((112, 100), 0)]), (3, [((118, 100), 0)])], [2, 3]),
+    ([(0, [((100, 100), 0)]), (1, [((106, 100), 0)]),
+      (2, []), (3, [])], [2, 3]),
+])
+def test_find_gaps_tail_uses_case_end_including_empty_frames(rows, expected):
+    gaps = RF.find_gaps(_frames(rows))
+    assert sorted(f for g in gaps if g['kind'] == 'tail'
+                  for f in g['frames']) == expected
+
+
 def test_fit_local_refuses_an_empty_patch():
     im = np.full((400, 400), 45, np.uint8)
     assert RF.fit_local(im, (200.0, 200.0), R) is None
@@ -181,8 +194,8 @@ def _same(a, b):
     return np.array_equal(a, b)
 
 
-def test_incremental_splice_matches_full_relink(tmp_path):
-    """Splicing the filled holes must reproduce the full re-link bit for bit."""
+def test_incremental_request_falls_back_to_full_reference(tmp_path):
+    """Compatibility requests cannot silently select the withdrawn splice."""
     raw = tmp_path / 'raw'
     raw.mkdir()
     tracks = {
@@ -211,7 +224,8 @@ def test_incremental_splice_matches_full_relink(tmp_path):
     full, full_out = RF.refine_case(case, tmp_path / 'full', raw, max_gap=5,
                                     incremental=False)
     assert inc['n_recovered'] == full['n_recovered'] > 0
-    assert inc['link_mode'] == 'incremental' and full['link_mode'] == 'full'
+    assert inc['link_mode'] == 'full' and full['link_mode'] == 'full'
+    assert inc['link_fallback_reason'] == 'incremental splice is not reference-equivalent'
 
     with np.load(Path(inc_out) / 'chunk_00000_0005.npz') as a, \
             np.load(Path(full_out) / 'chunk_00000_0005.npz') as b:
@@ -227,3 +241,82 @@ def test_incremental_splice_matches_full_relink(tmp_path):
     assert summary['segments'] == inc['n_tracks']
     assert summary['status'] == 'refined'
     assert summary['count_median'] == 3
+
+
+def test_splice_compatibility_replays_ema_after_insertion():
+    import copy
+    rows = [(i, [((x, 100), 0) for x in xs])
+            for i, xs in enumerate([[0, 100], [20, 104], [111],
+                                     [50, 120], [98, 159]])]
+    frames = _frames(rows)
+    RL._link_frames(frames, linker='v2', gap=5)
+    gap = next(g for g in RF.find_gaps(frames) if g['kind'] == 'interior')
+    RF.push_row(dict(frames)[2], {'xy_px': [35, 100], 'radius_px': R})
+    items = [{'gap': gap, 'fid': 2, 'row': 1}]
+    expected = copy.deepcopy(frames)
+    RL._link_frames(expected, linker='v2', gap=5)
+    RF.splice_links(frames, items)
+    assert np.array_equal(frames[-1][1]['segment_id'], [1, 2])
+    for (_, actual), (_, reference) in zip(frames, expected):
+        for key in actual:
+            assert _same(actual[key], reference[key]), key
+
+
+def test_refine_keeps_distinct_boundary_predictions(tmp_path, monkeypatch):
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    for fid in range(3):
+        assert cv2.imwrite(str(raw / ('f_%04d.png' % fid)),
+                           np.full((700, 700), 45, np.uint8))
+    case = _write_case(tmp_path / 'source' / 'sequences' / 'demo',
+                       [(f, [((100, 100), 0)]) for f in range(3)])
+    def gap(target, endpoint):
+        return {'track': 0, 'to_track': target, 'f_lo': 0, 'f_hi': 2,
+                'xy_lo': np.array([300., 300.]),
+                'xy_hi': np.array(endpoint, float), 'frames': [1],
+                'kind': 'boundary'}
+    # Same source/span, distinct targets. The first prediction fails; retaining
+    # only it would discard a valid recovery from the second prediction.
+    monkeypatch.setattr(RF, 'find_gaps', lambda *a, **kw:
+                        [gap(1, [320, 300]), gap(2, [340, 300])])
+    def fit(image, predicted, radius, **kw):
+        if predicted[0] < 315:
+            return None
+        return {'xy_px': predicted, 'rays': 40, 'rmse': 0.5,
+                'offset_from_prediction_px': 0., 'converged': True}
+    monkeypatch.setattr(RF, 'fit_local', fit)
+    rec, out = RF.refine_case(case, tmp_path / 'result', raw)
+    assert rec['n_attempts'] == 2
+    assert rec['n_recovered'] == 1
+    assert rec['attempts'][0]['accepted'] is False
+    assert rec['attempts'][1]['accepted'] is True
+
+
+@pytest.mark.parametrize('xs,max_gap,insertions', [
+    ([[0], [20], [], [], [], [], [120]], 5, [(2, 28)]),
+    ([[0], [], [], [], [], [], [], [0]], 6, [(1, 0)]),
+    ([[0] if f in (0, 6, 12) else [] for f in range(13)], 5, None),
+])
+def test_reference_fallback_partial_long_and_boundary_chain(xs, max_gap, insertions):
+    import copy
+    frames = _frames([(f, [((x, 100), 0) for x in row])
+                      for f, row in enumerate(xs)])
+    RL._link_frames(frames, linker='v2', gap=5)
+    gaps = RF.find_gaps(frames, max_gap=max_gap)
+    recovered = []
+    for gap in gaps:
+        for fid in gap['frames']:
+            selected = None if insertions is None else dict(insertions)
+            if selected is not None and fid not in selected:
+                continue
+            xy = RF.predict(gap, fid) if selected is None else [selected[fid], 100]
+            frame = dict(frames)[fid]
+            RF.push_row(frame, {'xy_px': xy, 'radius_px': R})
+            recovered.append({'gap': gap, 'fid': fid, 'row': len(frame['xy_px']) - 1})
+    assert recovered
+    reference = copy.deepcopy(frames)
+    RL._link_frames(reference, linker='v2', gap=5)
+    RF.splice_links(frames, recovered, gap=5)
+    for (_, actual), (_, expected) in zip(frames, reference):
+        for key in actual:
+            assert _same(actual[key], expected[key]), key

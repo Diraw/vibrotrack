@@ -17,12 +17,11 @@ it, runs the same fixed-radius radial fit as the detector, and accepts the resul
 only when it converges, keeps 14+ rays and stays within 12 px of the prediction.
 No position is ever interpolated into the output.
 
-The pass is additive and reversible: existing rows are copied unchanged, new rows
-carry ``recovered=1``, and the filled frames are spliced back into the existing
-identities (a direct link, or a gap-closing row) so they join the track they
-belong to.  ``incremental=False`` re-links the whole case instead, for audit.
-A fit that fails stays a hole for the review editor, where a human can still add
-the point.
+The pass is additive: existing detection values are preserved and new rows carry
+``recovered=1``. Identities are recomputed by the reference linker. Former local
+splicing was not equivalent to replaying velocity and competitive assignments;
+``incremental`` is retained as a compatibility request but falls back to full
+linking, with the reason recorded. A failed fit remains a hole for optional review.
 """
 from __future__ import annotations
 
@@ -128,7 +127,8 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
     # detection has no "other side" to pair with.
     rows_by_frame = {int(fid): np.asarray(rec['xy_px'], float).reshape(-1, 2)
                      for fid, rec in frames}
-    last_fid = int(fid_s[-1])
+    # fid_s is grouped by identity, not chronology; include empty final frames.
+    last_fid = max(int(fid) for fid, _rec in frames)
     for i in np.flatnonzero((end_fid < last_fid) & (last_fid - end_fid <= max_gap)):
         i = int(i)
         tid, f0 = int(uniq[i]), int(end_fid[i])
@@ -281,233 +281,18 @@ def _row_from(fit, radius, nearest, image):
         link_margin_px=np.nan, step_px=np.nan, dtheta_rad=np.nan)
 
 
-# ------------------------------------------------------------- incremental links
+# --------------------------------------------------------- reference linking
 
-def _angle_step(prev_theta, prev_ok, theta, ok):
-    """Wrapped orientation change for a direct link (NaN when either side is invalid)."""
-    if not (prev_ok and ok) or not np.isfinite(prev_theta) or not np.isfinite(theta):
-        return np.nan
-    return float(np.arctan2(np.sin(theta - prev_theta), np.cos(theta - prev_theta)))
+def splice_links(frames, recovered, *, gap=5):
+    """Compatibility entry point using the authoritative v2 linker.
 
-
-def _link_stats(frames):
-    """Recompute the relink summary from the stored identity fields."""
-    n_linked = n_gap = n_manual = total = 0
-    manual_rows = []
-    ids = []
-    steps = []
-    for fid, rec in frames:
-        seg = np.asarray(rec['segment_id'])
-        lv = np.asarray(rec['link_valid'], bool)
-        gf = np.asarray(rec['gap_frames'], np.int16)
-        st = np.asarray(rec['step_px'], float)
-        n_linked += int(lv.sum())
-        n_gap += int((gf > 1).sum())
-        total += len(seg)
-        ids.append(seg[seg >= 0])
-        finite = st[np.isfinite(st)]
-        if len(finite):
-            steps.append(finite)
-        if 'manual_edit' in rec:
-            mine = np.asarray(rec['manual_edit'], np.uint8) == 1
-            n_manual += int(mine.sum())
-            for j in np.flatnonzero(mine):
-                manual_rows.append({
-                    'frame': int(fid),
-                    'xy_px': [float(v) for v in rec['xy_px'][j]],
-                    'segment_id': int(seg[j]),
-                    'link_valid': bool(lv[j]),
-                    'gap_frames': int(gf[j]),
-                })
-    valid_ids = np.concatenate(ids) if ids else np.empty(0, np.int64)
-    track_ids = np.unique(valid_ids) if len(valid_ids) else np.empty(0, np.int64)
-    finite_steps = np.concatenate(steps) if steps else np.empty(0, np.float64)
-    return {
-        'n_frames': len(frames),
-        'n_detections': int(total),
-        'n_tracks': int(len(track_ids)),
-        'n_linked_rows': int(n_linked),
-        'n_gap_rows': int(n_gap),
-        'n_manual_rows': int(n_manual),
-        'manual_rows': manual_rows,
-        'link_fraction': float(n_linked / total) if total else 0.0,
-        'median_step_px': float(np.median(finite_steps)) if len(finite_steps) else None,
-    }
-
-
-def _row_of(frame_rec, seg_id):
-    """Index of the single row that carries ``seg_id`` in one frame (-1 if absent)."""
-    hit = np.flatnonzero(np.asarray(frame_rec['segment_id']) == int(seg_id))
-    return int(hit[0]) if len(hit) else -1
-
-
-def splice_links(frames, recovered):
-    """Insert the recovered rows into the existing identities without re-linking.
-
-    ``recovered`` is a list of ``{'gap', 'fid', 'row'}``: ``row`` is the index the
-    new detection was appended at inside the frame record.  The input case must
-    already be fully linked (every existing row carries a segment id), so the
-    splice only has to patch the rows around a filled hole:
-
-    * the new row is a direct continuation when it follows the track's previous
-      row by one frame, otherwise a gap-closing row (``link_valid=False``,
-      ``gap_frames=span``, no previous detection, total ``step_px``);
-    * the row after the hole (the next fragment's first row, or the same track's
-      next row) becomes a direct continuation of the last new row;
-    * a boundary hole unions the two fragments under the earlier id, and the
-      whole case is re-numbered in order of first appearance, which is exactly
-      the order the linker hands out ids.
-
-    Velocity is not part of the stored contract, so re-linking a whole case only
-    to reproduce these fields is wasted work.  The result is verified against
-    ``relink._link_frames`` in the tests and on G0.
+    Local identity splicing is not equivalent to replaying the EMA/assignment
+    state: even an exact predicted insertion can change future competition.
+    Keep callers safe rather than guessing a finite convergence window.
+    ``recovered`` remains accepted for compatibility, but identities are never
+    inferred from its candidate gap metadata.
     """
-    if not recovered:
-        return _link_stats(frames)
-
-    starts = np.concatenate([[0], np.cumsum(
-        [len(rec['xy_px']) for _, rec in frames])]).astype(np.int64)
-    frame_pos = {int(fid): i for i, (fid, _) in enumerate(frames)}
-
-    parent = {}
-
-    def find(x):
-        root = x
-        while parent.get(root, root) != root:
-            root = parent[root]
-        while parent.get(x, x) != x:
-            parent[x], x = root, parent[x]
-        return root
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    # Process the holes of one track in frame order, so a chain of filled frames
-    # links to the row that now precedes it (which may itself be recovered).
-    groups = {}
-    for item in recovered:
-        groups.setdefault(id(item['gap']), []).append(item)
-    patched = {}
-    last = {}
-    for items in sorted(groups.values(), key=lambda its: int(its[0]['fid'])):
-        items.sort(key=lambda it: int(it['fid']))
-        gap = items[0]['gap']
-        tid = int(gap['track'])
-        f_lo = int(gap['f_lo'])
-        prev = last.get(tid)
-        if prev is None or prev[0] < f_lo:
-            p0 = frame_pos[f_lo]
-            rec0 = frames[p0][1]
-            j0 = _row_of(rec0, tid)
-            if j0 < 0:
-                raise KeyError('track %d has no row at frame %d' % (tid, f_lo))
-            prev = (f_lo, int(starts[p0] + j0), np.asarray(rec0['xy_px'][j0], float),
-                    float(rec0['theta_rad'][j0]), bool(rec0['angle_valid'][j0]))
-        for item in items:
-            fid = int(item['fid'])
-            p = frame_pos[fid]
-            rec = frames[p][1]
-            r = int(item['row'])
-            xy = np.asarray(rec['xy_px'][r], float)
-            span = fid - prev[0]
-            rec['segment_id'][r] = np.int32(tid)
-            rec['step_px'][r] = np.float32(np.hypot(*(xy - prev[2])))
-            rec['gap_frames'][r] = np.int16(1 if span == 1 else span)
-            rec['link_valid'][r] = bool(span == 1)
-            rec['previous_detection'][r] = np.int64(prev[1] if span == 1 else -1)
-            theta = float(rec['theta_rad'][r])
-            ok = bool(rec['angle_valid'][r])
-            rec['dtheta_rad'][r] = np.float32(
-                _angle_step(prev[3], prev[4], theta, ok) if span == 1 else np.nan)
-            prev = (fid, int(starts[p] + r), xy, theta, ok)
-            patched.setdefault(p, set()).add(r)
-        last[tid] = prev
-
-        # The row after the hole now continues directly from the last new row.
-        f_hi = int(gap['f_hi'])
-        if f_hi > prev[0]:
-            ps = frame_pos[f_hi]
-            recs = frames[ps][1]
-            succ_id = int(gap.get('to_track', tid))
-            js = _row_of(recs, succ_id)
-            if js < 0:
-                raise KeyError('track %d has no row at frame %d' % (succ_id, f_hi))
-            xy_s = np.asarray(recs['xy_px'][js], float)
-            span = f_hi - prev[0]
-            recs['segment_id'][js] = np.int32(tid)
-            recs['step_px'][js] = np.float32(np.hypot(*(xy_s - prev[2])))
-            recs['gap_frames'][js] = np.int16(1 if span == 1 else span)
-            recs['link_valid'][js] = bool(span == 1)
-            recs['previous_detection'][js] = np.int64(prev[1] if span == 1 else -1)
-            recs['dtheta_rad'][js] = np.float32(
-                _angle_step(prev[3], prev[4], float(recs['theta_rad'][js]),
-                            bool(recs['angle_valid'][js])) if span == 1 else np.nan)
-            if succ_id != tid:
-                union(tid, succ_id)
-            patched.setdefault(ps, set()).add(js)
-
-    # Inserting rows shifts the global row numbers that previous_detection points
-    # at.  Rows patched above already carry new-layout indices; every other row
-    # still points into the pre-insert layout and is remapped here.
-    counts = np.asarray([len(rec['xy_px']) for _, rec in frames], np.int64)
-    added = np.zeros(len(frames), np.int64)
-    for item in recovered:
-        added[frame_pos[int(item['fid'])]] += 1
-    old_starts = np.concatenate([[0], np.cumsum(counts - added)])
-    for p, (_fid, rec) in enumerate(frames):
-        prev = np.asarray(rec['previous_detection'])
-        idx = np.flatnonzero(prev >= 0)
-        if p in patched:
-            skip = patched[p]
-            idx = np.asarray([i for i in idx if int(i) not in skip], np.int64)
-        if not len(idx):
-            continue
-        vals = prev[idx]
-        q = np.searchsorted(old_starts[1:], vals, side='right')
-        rec['previous_detection'][idx] = starts[q] + (vals - old_starts[q])
-
-    # dtheta is a derived column: the linker recomputes it for every direct link,
-    # while an extracted case may still hold the detector's placeholder.  Recompute
-    # it globally from the (now final) previous_detection instead of trusting the
-    # input, so the splice matches a full re-link row for row.
-    theta_all = np.concatenate([np.asarray(rec['theta_rad'], np.float64) for _, rec in frames])
-    ok_all = np.concatenate([np.asarray(rec['angle_valid'], bool) for _, rec in frames])
-    prev_all = np.concatenate([np.asarray(rec['previous_detection'], np.int64) for _, rec in frames])
-    dtheta_all = np.full(len(theta_all), np.nan, np.float32)
-    direct = prev_all >= 0
-    if direct.any():
-        src = prev_all[direct]
-        d = theta_all[direct] - theta_all[src]
-        d = np.arctan2(np.sin(d), np.cos(d))
-        d[~(ok_all[direct] & ok_all[src])] = np.nan
-        dtheta_all[direct] = d.astype(np.float32)
-
-    seg_all = np.concatenate([np.asarray(rec['segment_id']) for _, rec in frames]).astype(np.int64)
-    if parent:
-        top = int(max([seg_all.max(initial=-1)] + list(parent))) + 1
-        lut = np.arange(max(top, 1), dtype=np.int64)
-        for child in list(parent):
-            lut[child] = find(child)
-        seg_all = np.where(seg_all >= 0, lut[np.clip(seg_all, 0, len(lut) - 1)], seg_all)
-
-    # Renumber in order of first appearance: the linker hands out ids the same way.
-    valid = seg_all >= 0
-    if valid.any():
-        uniq, first = np.unique(seg_all[valid], return_index=True)
-        old_order = uniq[np.argsort(first, kind='stable')]
-        top = int(seg_all.max()) + 1
-        lut = np.full(top, -1, np.int64)
-        lut[old_order] = np.arange(len(old_order))
-        seg_all = np.where(valid, lut[np.clip(seg_all, 0, top - 1)], seg_all)
-
-    for (fid, rec) in frames:
-        n = len(rec['xy_px'])
-        lo = int(starts[frame_pos[int(fid)]])
-        rec['segment_id'] = seg_all[lo:lo + n].astype(np.int32)
-        rec['dtheta_rad'] = dtheta_all[lo:lo + n].copy()
-    return _link_stats(frames)
+    return R._link_frames(frames, linker='v2', gap=gap)
 
 
 # ------------------------------------------------------------------------ driver
@@ -637,12 +422,6 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
             if 'recovered' not in rec:
                 rec['recovered'] = np.zeros(len(rec['xy_px']), np.uint8)
     frames = [item for group in chunk_frames for item in group]
-    # The splice path needs identities on every existing row; a case that was never
-    # linked (manual rows carry segment_id=-1) still goes through the linker.
-    linked_input = linker == 'v2' and all(
-        len(rec['segment_id']) == 0 or int(np.asarray(rec['segment_id']).min()) >= 0
-        for _fid, rec in frames)
-
     if radius is None:
         radii = np.concatenate([np.asarray(rec['radius_px'], float)
                                 for _fid, rec in frames])
@@ -680,21 +459,9 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
     gaps = find_gaps(frames, max_gap=max_gap,
                      boundary_gate=params['boundary_gate'],
                      boundary_growth=params['boundary_growth'])
-    if gaps:
-        # A boundary pairing and an interior hole can describe the same frames when a
-        # track was already joined; keep one attempt per (frame span, position).
-        seen = {}
-        unique = []
-        for g in gaps:
-            key = (int(g['track']), g['f_lo'], g['f_hi'])
-            prev = seen.get(key)
-            if prev is None:
-                seen[key] = g
-                unique.append(g)
-            elif prev.get('kind') != 'interior' and g.get('kind') == 'interior':
-                unique[unique.index(prev)] = g
-                seen[key] = g
-        gaps = unique
+    # Distinct boundary targets can yield distinct fitting seeds. Never discard
+    # one before looking at pixels. The spatial duplicate-centre gate below
+    # prevents two accepted predictions from inserting the same particle twice.
     if limit:
         gaps = gaps[:int(limit)]
     by_fid = {int(fid): rec for fid, rec in frames}
@@ -741,14 +508,12 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
                          '-' if fit is None else ('%.2f' % fit['rmse']),
                          'ok' if reason is None else reason))
 
-    if incremental and linked_input:
-        # Only the rows around a filled hole change; re-running the linker over
-        # 4.6 M detections would cost ~95 s to produce the same identities.
-        stats = splice_links(frames, recovered_rows)
-        link_mode = 'incremental'
-    else:
-        stats = R._link_frames(frames, linker=linker, gap=link_gap)
-        link_mode = 'full'
+    # Gap metadata supplies fitting seeds, not authoritative identities.
+    # Replay the reference state after insertions (EMA changes can propagate).
+    stats = R._link_frames(frames, linker=linker, gap=link_gap)
+    link_mode = 'full'
+    link_fallback_reason = ('incremental splice is not reference-equivalent'
+                            if incremental else None)
 
     if seq_out.exists() and any(seq_out.iterdir()):
         if not force:
@@ -785,6 +550,7 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
         'attempts': attempts,
         'linker': linker,
         'link_mode': link_mode,
+        'link_fallback_reason': link_fallback_reason,
         'link_gap': link_gap,
         'n_frames': stats['n_frames'],
         'n_detections': stats['n_detections'],
