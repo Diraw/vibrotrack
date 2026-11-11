@@ -5,6 +5,36 @@ and never edits the original `chunk_*.npz`. It is meant for the small number of
 frames where the automatic count differs from the run mode (or where a user
 explicitly wants a second look).
 
+## 0. Try the automatic recovery first
+
+Most holes are not judgement calls. A linked track that is missing exactly one
+frame still predicts the particle centre to a few pixels, and a fixed-radius fit
+in a 91x91 window around that prediction recovers the true centre without any
+human input. `refine` does this on a *linked* case and writes a new one:
+
+```bash
+vibrotrack refine \
+  --case-dir relinked/case01 \
+  --raw frames \
+  --out refined/case01 \
+  --max-gap 10
+```
+
+* only holes are attempted (interior gaps, fragment ends that the linker could
+  not join, and tracks that stop at the last frames);
+* a new row is written only if the fit converges, keeps >=14 of 64 rays, has
+  edge rmse <=1.2 px and lands within 12 px of the prediction; otherwise the
+  hole stays for a human;
+* new rows carry `recovered=1`; existing rows are copied unchanged; the case is
+  re-linked before writing;
+* `refine.json` records every attempt (prediction, fitted centre, rays, rmse,
+  offset, reason) so a rejected attempt is auditable.
+
+On the dense G0 case this recovered 66/66 missing particles with a median
+1.04 px difference from the manual points (max 3.03 px) and reproduced the
+manually curated totals exactly (4,644,516 rows, 516 tracks, 0 gap rows).
+Run `review` afterwards: only the holes that `refine` refused will be queued.
+
 ## 1. Build a review queue
 
 ```bash
@@ -27,20 +57,41 @@ review/case01/
 ```
 
 `review_queue.json` contains the count histogram, each flagged frame, its
-detections (x, y, radius, theta, confidence, segment id), and the exported frame
-path. Images are exported at native resolution so editor coordinates are in the
-same pixel frame as the detector.
+detections (x, y, radius, theta, confidence, segment id), the exported frame
+path, and `hints`: for every frame that is short of particles, the likely centre
+of the missing one, taken from the neighbouring frames (up to 6 away). Two
+segments that sit at the same place on either side of the gap are reported as a
+single hint carrying both ids, so a track that broke in two is not counted
+twice. Hints are a locating aid, not a detection: always confirm the particle on
+the image before clicking. Images are exported at native resolution so editor
+coordinates are in the same pixel frame as the detector.
 
 ## 2. Open the editor
 
 Open `tools/review_editor.html` in a browser, then:
 
-1. choose `review_queue.json`;
-2. choose the whole `review/case01/frames` directory;
-3. add a missing particle by clicking its centre (radius = queue median radius);
+1. click **打开 review 目录** and pick `review/case01`: the editor finds
+   `review_queue.json` and the frames it references in one step (dragging the
+   same folder onto the page works too). Browsers cannot read a sibling folder
+   just because a JSON was chosen, so the directory is the thing to grant;
+2. zoom with the wheel and pan by dragging so the particle fills the canvas;
+3. add a missing particle by clicking its centre (radius = queue median radius).
+   The hinted position gets a cyan halo, a dashed ring, a crosshair and a `缺 1`
+   chip drawn at a fixed screen size, so it is findable at any zoom. The chip is
+   a button: hovering it lightens its background, and clicking it pans the
+   view to that position (when the target is outside the viewport the
+   chip sticks to the edge with an arrow). The hint disappears once a point is
+   placed, and the **参考位置** button toggles all hints off;
 4. remove a false detection by clicking its circle;
-5. undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>, navigate with the arrow keys;
-6. click **保存 review_actions.json**.
+5. undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>, navigate with the arrow keys. The
+   sidebar shows `缺 N` / `1/2` / `✓` per frame plus an overall count, so a frame
+   that is short two particles is not signed off after one click;
+6. click **保存 review_actions.json**; the header button **操作说明** explains
+   all of the above without taking space on the page;
+7. reopening the same directory restores its `review_actions.json` automatically,
+   so a session resumes where it stopped; edits are written back to that file
+   as you work (pick the directory with write access), with a local-storage
+   copy as a fallback.
 
 Nothing is uploaded. The editor writes only an action log; it does not write
 back to the automatic chunks.

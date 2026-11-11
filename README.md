@@ -162,7 +162,28 @@ vibrotrack plot \
 `(cx + r*cos(theta), cy - r*sin(theta))`。`plot` 已固定使用这个约定，
 细节见 [`docs/OVERLAY.md`](docs/OVERLAY.md)。
 
-### 8. 可选的人工 review / curation
+### 8. 自动补检（refine）
+
+链接好的轨迹中间缺帧，说明那里本该有一颗颗粒却没被检出——接触遮挡让模板峰消失，
+或者一帧位移超过 detector 的 `max_shift`。`refine` 用轨迹本身给出的预测位置当种子，
+在 91×91 的局部窗口里重跑同一套固定半径射线拟合；只有拟合收敛、射线数 ≥14、
+边缘 rmse ≤1.2 px 且离预测不超过 12 px 时才写入。
+
+```bash
+vibrotrack refine \
+  --case-dir relinked/case01 \
+  --raw frames \
+  --out refined/case01 \
+  --max-gap 10
+```
+
+它是增量式的：原有检测行一个不改，新行带 `recovered=1`，写完后自动重新链接。
+拟合不通过的位置保持空缺，留给人工复核——不会插值造点。在 G0 的 66 个缺口上
+66/66 全部找回，与人工点的中位偏差 1.04 px（最大 3.03 px），输出 4,644,516 行、
+516 条轨迹、零 gap 行，与人工 curation 的结果逐项一致。详见
+[`docs/REVIEW.md`](docs/REVIEW.md)。
+
+### 9. 可选的人工 review / curation
 
 自动提取之后，只把计数异常的帧交给人工复核；原始 chunk 不改。
 
@@ -173,7 +194,8 @@ vibrotrack review \
   --config apparatus.yaml \
   --out review/case01
 
-# 浏览器打开 tools/review_editor.html，载入 queue 和 frames 文件夹
+# 浏览器打开 tools/review_editor.html，选 review 目录即可同时载入 queue 和帧图
+# 每帧的 hints 以青色虚线圆标出缺颗的大致位置，放好点后自动隐去
 # 导出 review_actions.json 后：
 vibrotrack curate \
   --case-dir batch/sequences/case01 \

@@ -1,3 +1,65 @@
+# Changelog
+
+## 0.9.0 — 2026-11-12
+
+- new `vibrotrack refine`: recovers particles that a linked track proves must
+  exist but the detector dropped, without re-running detection. Each hole -
+  an interior gap, a fragment end the linker could not join, or a track that
+  stops at the last frames - seeds a 91x91 window with the track prediction and
+  runs the same fixed-radius radial fit as the detector;
+- a row is written only when the fit converges, keeps at least 14 of 64 rays,
+  has edge rmse <= 1.2 px and lands within 12 px of the prediction. New rows
+  carry `recovered=1`, existing rows are copied unchanged, and the case is
+  re-linked before writing, so a filled frame joins the track it belongs to.
+  Nothing is interpolated into the output;
+- `refine.json` records every attempt (prediction, fitted centre, rays, rmse,
+  offset, rejection reason) so a refusal is auditable;
+- the fit restarts from a 3x3 grid around the prediction and follows the nearest
+  fixed point instead of giving up when no candidate passes on the first
+  iteration: a seed 6 px off at the wall used to end the attempt even though the
+  disc was there;
+- on the dense G0 case this recovered all 66 missing particles with a median
+  1.04 px difference from the manual points (max 3.03 px) and reproduced the
+  curated totals exactly: 4,644,516 rows, 516 tracks, 0 gap rows;
+- `vibrotrack refine --max-gap 10` is needed on a pre-relink case whose longest
+  hole (8 frames) exceeds the linker's own gap.
+
+## 0.8.0 — 2026-11-11
+
+- `vibrotrack review` now stores `hints` on every flagged frame: the likely
+  position of each missing particle, taken from the neighbouring frames. A track
+  that broke into two segments is reported once, with both ids, so a long gap is
+  not mistaken for two missing particles;
+- the review editor draws those hints in screen space: a filled halo, a dashed
+  ring, a crosshair and a "missing" chip, so the marker stays readable at any
+  zoom; it hides once a manual point is placed and can be toggled off;
+- detections are drawn as rings from 30 % zoom up and as small dots below, so
+  the fit view no longer turns into a thick green mesh;
+- the editor canvas zooms (wheel, +/- keys, 适应 / 1:1 buttons) and pans by
+  dragging; a drag never adds a point, and the overlay keeps a constant
+  on-screen width at any zoom;
+- the review editor loads a whole review directory in one step (directory
+  picker or drag-and-drop): it finds `review_queue.json` and the frames it
+  references, instead of asking for the queue and the folder separately;
+- the review editor sidebar tracks progress per frame and overall (`缺 N`,
+  `1/2`, `✓`), so a frame that is short two particles is not marked done
+  after one click;
+- the hint chip is clickable and pans the view to the reference position;
+  when the target sits outside the viewport the chip is pinned to the edge
+  with a direction arrow;
+- a drag only swallows its own click, so the next click on a chip works;
+- the long help paragraph is gone; the legend stays and the instructions
+  live in an "操作说明" dialog opened from the header;
+- hovering a hint chip just lightens its background, so it reads as a button;
+- opening a review directory now restores its `review_actions.json` in the same
+  gesture, so a half-finished review resumes without a separate import step;
+- the editor writes that log back to the directory on every change (debounced),
+  with local storage as a fallback, so closing the page loses nothing;
+- fix `relink` reading a chunk column once per frame: `np.load` decompresses
+  on every access, so the per-frame slice re-inflated the whole column and a
+  full case took hours instead of ~3.5 min (read phase 20 s, link 3 min);
+- add a test that hints point at the missing detection.
+
 ## 0.7.0 — 2026-11-11
 
 - keep detector prior across shard boundaries with configurable warm-up frames
@@ -21,8 +83,6 @@
   all detector quality fields;
 - add `relink/v1` audit with source/output hashes and track statistics;
 - add tests for manual rows across chunk boundaries and both v1/v2 linkers.
-
-# Changelog
 
 ## 0.5.1 — 2026-11-11
 
