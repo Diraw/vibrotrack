@@ -105,11 +105,14 @@ def _read_case(case_dir):
                 raise ValueError('invalid frame_offsets: %s' % cf)
             # Detection arrays have one row per detection. Scalar per-chunk
             # metadata (schema_version, wall_model, ...) is copied unchanged.
+            # Materialise every key once: np.load() decompresses on each access,
+            # so slicing z[k] per frame re-inflates the whole column every time.
+            cols = {k: np.asarray(z[k]) for k in z.files}
             row_keys = [k for k in z.files
                         if k not in ('frame_ids', 'frame_offsets')
-                        and np.asarray(z[k]).ndim >= 1
-                        and np.asarray(z[k]).shape[0] == n]
-            scalar = {k: np.asarray(z[k]).copy() for k in z.files
+                        and cols[k].ndim >= 1
+                        and cols[k].shape[0] == n]
+            scalar = {k: cols[k].copy() for k in z.files
                       if k not in ('frame_ids', 'frame_offsets')
                       and k not in row_keys}
             keys = set(row_keys)
@@ -131,7 +134,7 @@ def _read_case(case_dir):
                                      'duplicate/backward frame %d in %s' % (fid, cf))
                 last_frame = fid
                 lo, hi = int(offs[i]), int(offs[i + 1])
-                rec = {k: np.asarray(z[k][lo:hi]).copy() for k in row_keys}
+                rec = {k: cols[k][lo:hi].copy() for k in row_keys}
                 frames.append((fid, rec))
                 all_ids.append(fid)
             chunk_frames.append(frames)
