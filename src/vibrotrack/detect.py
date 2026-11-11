@@ -203,6 +203,8 @@ def overlay(im,d,path,label):
         cv2.circle(out,(round(float(x)),round(float(y))),round(float(d['radius_px'][i])),color,1)
         cv2.circle(out,(round(float(x)),round(float(y))),2,(0,0,255),-1)
         if d['angle_valid'][i]:
+            # theta_rad is y-up (atan2(-dy, dx)); image y grows downward.
+            # Keep the MINUS sin here; +sin mirrors the tick (see visualize.py).
             t=d['theta_rad'][i]; q=(round(float(x+24*np.cos(t))),round(float(y-24*np.sin(t))))
             cv2.line(out,(round(float(x)),round(float(y))),q,color,2)
     cv2.putText(out,label,(25,45),cv2.FONT_HERSHEY_SIMPLEX,1,(0,0,255),2)
