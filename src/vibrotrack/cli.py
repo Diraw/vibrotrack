@@ -15,6 +15,7 @@ from . import boundary
 from . import detect as X
 from . import geometry as G
 from . import pipeline
+from . import refine as refine_mod
 from . import review as review_mod
 from . import relink as relink_mod
 from . import schema
@@ -222,6 +223,23 @@ def _cmd_relink(args):
         rec['n_tracks'], rec['n_linked_rows'], rec['n_gap_rows']))
     print('out:      %s' % seq_out)
     print('relink:   %s' % (seq_out / 'relink.json'))
+    return 0
+
+
+def _cmd_refine(args):
+    """Recover particles missing inside track gaps with a local fit."""
+    rec, seq_out = refine_mod.refine_case(
+        args.case_dir, args.out, args.raw, max_gap=args.max_gap, radius=args.radius,
+        min_rays=args.min_rays, max_rmse=args.max_rmse, max_offset=args.max_offset,
+        min_sep=args.min_sep, limit=args.limit, force=args.force, verbose=args.verbose)
+    print('case:      %s' % rec['case'])
+    print('gaps:      %d; attempts: %d; recovered: %d; rejected: %d' % (
+        rec['n_gaps'], rec['n_attempts'], rec['n_recovered'], rec['n_rejected']))
+    print('rows:      %d (was linked again with %s, gap %d)' % (
+        rec['n_detections'], rec['linker'], rec['link_gap']))
+    print('tracks:    %d; gap rows: %d' % (rec['n_tracks'], rec['n_gap_rows']))
+    print('out:       %s' % seq_out)
+    print('refine:    %s' % (seq_out / 'refine.json'))
     return 0
 
 
@@ -452,6 +470,27 @@ def build_parser():
                    help='override run_config.json gap (default: 5)')
     p.add_argument('--force', action='store_true', help='replace an existing output case')
     p.set_defaults(func=_cmd_relink)
+
+    p = sub.add_parser('refine', help='recover particles missing inside track gaps with a local fit (no full re-detection)')
+    p.add_argument('--case-dir', required=True,
+                   help='.../sequences/<case> containing chunk_*.npz, or a batch with one case')
+    p.add_argument('--raw', required=True, help='directory of TIFF frames')
+    p.add_argument('--out', required=True,
+                   help='new batch root; products go to <out>/sequences/<case>/')
+    p.add_argument('--max-gap', type=int, default=None,
+                   help='longest track hole to attempt, in frames (default: run_config link_gap)')
+    p.add_argument('--radius', type=float, default=None,
+                   help='particle radius in px (default: median radius of the case)')
+    p.add_argument('--min-rays', type=int, default=None, help='minimum valid rays (default 14)')
+    p.add_argument('--max-rmse', type=float, default=None, help='maximum edge rmse px (default 1.2)')
+    p.add_argument('--max-offset', type=float, default=None,
+                   help='maximum distance from the track prediction px (default 12)')
+    p.add_argument('--min-sep', type=float, default=None,
+                   help='reject a fit closer than this many radii to an existing centre (default 1.6)')
+    p.add_argument('--limit', type=int, default=0, help='only attempt the first N gaps')
+    p.add_argument('--verbose', action='store_true', help='print every attempt')
+    p.add_argument('--force', action='store_true', help='replace an existing output case')
+    p.set_defaults(func=_cmd_refine)
 
     p = sub.add_parser('plot', help='render raw frames with fitted particles and orientation ticks')
     p.add_argument('--raw', required=True, help='directory of TIFF frames')

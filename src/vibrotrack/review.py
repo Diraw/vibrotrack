@@ -316,6 +316,9 @@ def _field_default(key, n, radius, action=None):
         return np.full(n, 0 if action.get('angle_valid', False) else 1, np.uint16)
     if key == 'outside_mask':
         return np.zeros(n, np.uint8)
+    if key == 'recovered':
+        # refine marks auto-recovered rows; a manually added row is not one
+        return np.zeros(n, np.uint8)
     if key == 'segment_id':
         return np.full(n, -1, np.int32)
     if key == 'previous_detection':
