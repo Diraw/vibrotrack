@@ -2,6 +2,14 @@
 
 ## Unreleased — correctness before performance
 
+- Add an exact unambiguous-assignment fast path: use a conservative spatial
+  query, verify distances with the reference np.hypot strict gate, and bypass
+  Hungarian only when every gated row and destination is unique. Competition,
+  ties, unusual gates and nonfinite inputs retain the dense reference path.
+  EMA, gap closing and full-state replay remain unchanged. G0 three-pair runs:
+  linking 86.15 -> 32.07 s; complete refine 104.18 -> 48.99 s, with every output
+  array identical. This supersedes withdrawn local-splice speed claims.
+
 - Withdraw local identity splicing: a recovered detection changes EMA velocity
   and can alter subsequent Hungarian competition. G0 equivalence did not prove
   generic equivalence. Both the default path and compatibility splice entry point

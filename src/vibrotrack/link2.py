@@ -23,6 +23,7 @@ Identity only: positions are never modified.
 """
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+from scipy.spatial import cKDTree
 
 
 def new_state(gate=None, gap=5, vel_alpha=0.5):
@@ -31,6 +32,33 @@ def new_state(gate=None, gap=5, vel_alpha=0.5):
 
 
 def _assign(pred, cur, gate):
+    """Skip dense assignment only when the gated graph has isolated edges.
+
+    Spatial lookup is conservative near the strict gate. All actual decisions
+    still use np.hypot, exactly like the dense reference. Any row competition
+    or repeated destination goes through the unchanged Hungarian solver.
+    """
+    if (len(pred) < 64 or len(cur) < 2 or not np.isfinite(gate)
+            or gate <= 0 or gate >= 1e6
+            or not np.isfinite(pred).all() or not np.isfinite(cur).all()):
+        return _assign_dense(pred, cur, gate)
+    radius = gate + max(1e-9, abs(gate) * 1e-10)
+    _distance, indices = cKDTree(cur).query(pred, k=2, distance_upper_bound=radius)
+    present = indices < len(cur)
+    safe = np.minimum(indices, len(cur) - 1)
+    delta = pred[:, None, :] - cur[safe]
+    actual = np.hypot(delta[:, :, 0], delta[:, :, 1])
+    inside = present & (actual < gate)
+    if np.any(inside.sum(axis=1) > 1):
+        return _assign_dense(pred, cur, gate)
+    rows = np.flatnonzero(inside.any(axis=1))
+    columns = indices[rows, inside[rows].argmax(axis=1)]
+    if len(np.unique(columns)) != len(columns):
+        return _assign_dense(pred, cur, gate)
+    return rows, columns
+
+
+def _assign_dense(pred, cur, gate):
     if not len(pred) or not len(cur):
         return np.zeros(0, int), np.zeros(0, int)
     d = np.hypot(pred[:, None, 0] - cur[None, :, 0], pred[:, None, 1] - cur[None, :, 1])
