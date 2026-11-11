@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,6 +91,69 @@ def count_stats(case_dir):
     }
 
 
+_HINT_WINDOW = 6      # frames searched on each side of a flagged frame
+_HINT_MERGE_PX = 25.0  # two ids closer than this are treated as one broken track
+
+
+def _window_rows(case_dir, wanted):
+    """Return ``{frame: (segment_id, xy_px)}`` for the requested frames only."""
+    rows = {}
+    for f in _chunks(case_dir):
+        with np.load(f, allow_pickle=False) as z:
+            ids = np.asarray(z['frame_ids']).reshape(-1)
+            off = np.asarray(z['frame_offsets']).astype(np.int64)
+            seg = np.asarray(z['segment_id'])
+            xy = np.asarray(z['xy_px'], float)
+            for i, fid in enumerate(ids):
+                fid = int(fid)
+                if fid in wanted and fid not in rows:
+                    lo, hi = int(off[i]), int(off[i + 1])
+                    rows[fid] = (seg[lo:hi].astype(np.int64), xy[lo:hi].astype(float))
+        if len(rows) == len(wanted):
+            break
+    return rows
+
+
+def missing_hints(flagged, rows, window=_HINT_WINDOW, merge_px=_HINT_MERGE_PX):
+    """Guess where a missing particle is, for every frame in ``flagged``.
+
+    Looks at neighbouring frames (up to ``window`` away), collects segment ids
+    that appear there but not in the flagged frame, and merges ids sitting at
+    almost the same place: a track that broke into two segments shows up twice.
+    Returns ``{frame: [{'xy_px', 'segments', 'distance', 'ref_frame'}, ...]}``
+    sorted by distance.
+    """
+    hints = {}
+    empty = np.zeros(0, np.int64)
+    for fid in flagged:
+        present = set(int(v) for v in rows.get(fid, (empty,))[0])
+        best = {}
+        for g, (seg, xy) in rows.items():
+            d = abs(g - fid)
+            if d == 0 or d > window:
+                continue
+            for s, p in zip(seg, xy):
+                s = int(s)
+                if s < 0 or s in present:
+                    continue
+                if s not in best or d < best[s][0]:
+                    best[s] = (d, [float(p[0]), float(p[1])], int(g))
+        merged = []
+        for s, (d, p, g) in sorted(best.items(), key=lambda kv: kv[1][0]):
+            for m in merged:
+                if math.hypot(p[0] - m['xy_px'][0], p[1] - m['xy_px'][1]) <= merge_px:
+                    m['segments'].append(s)
+                    if d < m['distance']:
+                        m['distance'], m['xy_px'], m['ref_frame'] = d, p, g
+                    break
+            else:
+                merged.append({'xy_px': p, 'segments': [s], 'distance': d,
+                               'ref_frame': g})
+        merged.sort(key=lambda m: m['distance'])
+        hints[fid] = merged
+    return hints
+
+
 def build_queue(case_dir, expected_count=None, max_frames=0):
     """Build a review queue for frames whose count differs from the run mode.
 
@@ -119,6 +183,15 @@ def build_queue(case_dir, expected_count=None, max_frames=0):
     missing = sorted(set(flagged) - set(selected)) if flagged else []
     if missing:
         raise KeyError('flagged frames not found in chunks: %s' % missing)
+
+    hints = {}
+    if flagged:
+        window = set()
+        for fid in flagged:
+            lo = max(0, fid - _HINT_WINDOW)
+            hi = min(len(counts) - 1, fid + _HINT_WINDOW)
+            window.update(range(lo, hi + 1))
+        hints = missing_hints(flagged, _window_rows(case_dir, window))
 
     all_radii = []
     for rec in selected.values():
@@ -152,6 +225,7 @@ def build_queue(case_dir, expected_count=None, max_frames=0):
             'delta': int(n) - expected,
             'reason': 'count_mismatch',
             'detections': dets,
+            'hints': hints.get(fid, [])[:max(0, expected - n)],
         })
 
     queue = {

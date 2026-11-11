@@ -6,32 +6,47 @@
 <style>
   :root { color-scheme: dark; --bg:#11161d; --panel:#1a222c; --line:#304050; --fg:#e8eef5; --muted:#9aabba; --green:#20d67a; --orange:#ffb02e; --red:#ff5c64; --cyan:#39d5ff; --violet:#d78cff; }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, "Segoe UI", sans-serif; display:flex; flex-direction:column; height:100vh; overflow:hidden; }
   header { padding:12px 16px; border-bottom:1px solid var(--line); background:#141b23; }
   h1 { font-size:16px; margin:0 0 8px; font-weight:650; }
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   .muted { color:var(--muted); }
   .controls label { display:flex; gap:6px; align-items:center; color:var(--muted); }
   input[type=file] { color:var(--fg); max-width:330px; }
-  main { display:grid; grid-template-columns:250px minmax(0,1fr); min-height:calc(100vh - 92px); }
-  aside { border-right:1px solid var(--line); background:var(--panel); padding:12px; overflow:auto; max-height:calc(100vh - 92px); }
+  #manualBox { margin-top:6px; color:var(--muted); font-size:13px; }
+  #manualBox summary { cursor:pointer; }
+  #manualBox .row { margin-top:6px; }
+  main { display:grid; grid-template-columns:250px minmax(0,1fr); flex:1 1 auto; min-height:0; }
+  aside { border-right:1px solid var(--line); background:var(--panel); padding:12px; overflow:auto; min-height:0; }
   #frameList { list-style:none; padding:0; margin:10px 0 0; }
   #frameList li { padding:7px 8px; border:1px solid transparent; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; gap:8px; }
   #frameList li:hover { border-color:var(--line); }
   #frameList li.active { background:#243245; border-color:#52708e; }
   #frameList .delta { color:var(--red); font-variant-numeric:tabular-nums; }
-  section { padding:12px 16px 18px; min-width:0; }
+  #frameList .delta.partial { color:var(--orange); }
+  #frameList .delta.done { color:var(--green); }
+  section { padding:12px 16px 18px; min-width:0; display:flex; flex-direction:column; overflow:hidden; }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
   button { background:#263646; color:var(--fg); border:1px solid #40566b; border-radius:6px; padding:7px 11px; cursor:pointer; }
   button:hover { background:#31475c; }
   button.active { background:#1e6f4b; border-color:var(--green); }
   button:disabled { opacity:.45; cursor:not-allowed; }
   #status { color:var(--muted); margin-left:4px; }
-  #canvasWrap { position:relative; background:#080b0f; border:1px solid var(--line); border-radius:8px; overflow:hidden; min-height:240px; display:flex; align-items:center; justify-content:center; }
-  canvas { display:block; max-width:100%; max-height:calc(100vh - 190px); width:auto; height:auto; cursor:none; }
+  #canvasWrap { position:relative; background:#080b0f; border:1px solid var(--line); border-radius:8px; overflow:hidden; flex:1 1 auto; min-height:240px; }
+  canvas { display:block; width:100%; height:100%; cursor:none; }
   #cursorDot { position:fixed; display:none; width:7px; height:7px; border-radius:50%; background:var(--cyan); box-shadow:0 0 0 1px #fff, 0 0 5px #000; pointer-events:none; z-index:100; transform:translate(-50%,-50%); }
-  #empty { position:absolute; color:var(--muted); text-align:center; padding:28px; pointer-events:none; }
+  #empty { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); color:var(--muted); text-align:center; padding:28px; pointer-events:none; }
+  body.dropping #canvasWrap { outline:2px dashed var(--cyan); outline-offset:-6px; }
   .help { color:var(--muted); margin-top:10px; font-size:13px; }
+  #helpBtn { margin-left:auto; }
+  #helpDlg { position:relative; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:12px; padding:20px 22px 18px; width:min(620px, 92vw); max-height:82vh; overflow:auto; box-shadow:0 24px 60px rgba(0,0,0,.55); }
+  #helpDlg::backdrop { background:rgba(4,8,12,.66); }
+  #helpDlg h2 { font-size:15px; margin:0 0 12px; font-weight:650; }
+  #helpDlg ul { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:9px; color:var(--muted); font-size:13px; }
+  #helpDlg li { line-height:1.55; }
+  #helpDlg b { color:var(--fg); font-weight:600; }
+  #helpDlg code { color:#9fe9ff; }
+  #helpClose { position:absolute; top:12px; right:14px; padding:2px 9px; font-size:15px; line-height:1.4; }
   kbd { background:#263646; border:1px solid #40566b; border-radius:4px; padding:1px 5px; font-size:12px; }
   .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:6px; }
   .swatch { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:4px; vertical-align:middle; }
@@ -41,16 +56,27 @@
 <header>
   <h1>vibrotrack · review / curation</h1>
   <div class="row controls">
-    <label>review_queue.json <input id="queueInput" type="file" accept=".json,application/json"></label>
-    <label>review/frames 文件夹 <input id="folderInput" type="file" webkitdirectory multiple></label>
+    <button id="pickBtn">打开 review 目录</button>
     <button id="saveBtn" disabled>保存 review_actions.json</button>
-    <span id="loadState" class="muted">先选择 queue 和 frames 文件夹</span>
+    <span id="saveState" class="muted"></span>
+    <button id="importBtn" disabled title="继续上次的标注">载入已有动作</button>
+    <input id="actionsInput" type="file" accept=".json,application/json" hidden>
+    <span id="loadState" class="muted">打开 review 目录（或把目录拖进页面）即可载入 queue 和帧图</span>
+    <button id="helpBtn" title="操作说明">操作说明</button>
   </div>
+  <details id="manualBox">
+    <summary>手动选择 queue / frames（不支持目录选择时用）</summary>
+    <div class="row">
+      <label>review_queue.json <input id="queueInput" type="file" accept=".json,application/json"></label>
+      <label>review/frames 文件夹 <input id="folderInput" type="file" webkitdirectory multiple></label>
+    </div>
+  </details>
 </header>
 <main>
   <aside>
     <div><strong>异常帧</strong></div>
     <div id="stats" class="muted" style="margin-top:5px">未载入</div>
+    <div id="progress" class="muted" style="margin-top:4px"></div>
     <ul id="frameList"></ul>
   </aside>
   <section>
@@ -58,6 +84,12 @@
       <button id="addBtn" class="active">添加颗粒（点击空白处）</button>
       <button id="removeBtn">删除颗粒（点击圆圈）</button>
       <button id="undoBtn" disabled>撤销</button>
+      <button id="hintBtn" class="active">参考位置</button>
+      <button id="zoomOutBtn">−</button>
+      <span id="zoomLabel" class="muted">100%</span>
+      <button id="zoomInBtn">+</button>
+      <button id="fitBtn">适应</button>
+      <button id="oneToOneBtn">1:1</button>
       <button id="prevBtn" disabled>上一帧</button>
       <button id="nextBtn" disabled>下一帧</button>
       <span id="status"></span>
@@ -65,22 +97,33 @@
     <div id="canvasWrap">
       <canvas id="canvas" width="800" height="600"></canvas>
       <div id="cursorDot"></div>
-      <div id="empty">载入 queue 后，再选择包含帧图片的文件夹</div>
+      <div id="empty">打开 review 目录（或把目录拖入页面）即可开始</div>
     </div>
     <div class="legend">
       <span><i class="swatch" style="background:var(--green)"></i>自动检测</span>
       <span><i class="swatch" style="background:var(--orange)"></i>朝向</span>
       <span><i class="swatch" style="background:var(--red)"></i>已删除</span>
       <span><i class="swatch" style="background:var(--violet)"></i>手动添加</span>
-    </div>
-    <div class="help">
-      画布内使用小圆点光标，便于对准颗粒中心。点击空白处补检；点击绿色圆圈删除该颗粒。
-      添加的颗粒只记录中心和半径；curate 可用局部暗色 marker 估计朝向，失败则保持无效。
-      用 <kbd>←</kbd> / <kbd>→</kbd> 切换异常帧。图片不会上传，全部在本地浏览器处理。
-      保存后，把 <code>review_actions.json</code> 交给 <code>vibrotrack curate</code>。
+      <span><i class="swatch" style="background:var(--cyan)"></i>参考位置（虚线）</span>
     </div>
   </section>
 </main>
+
+<dialog id="helpDlg">
+  <button id="helpClose" title="关闭">×</button>
+  <h2>操作说明</h2>
+  <ul>
+    <li><b>载入</b>　打开 review 目录（或把该目录拖进页面）会一次载入 queue 和帧图；只有浏览器不支持目录选择时才需在「手动选择」里选两个。</li>
+    <li><b>视角</b>　滚轮缩放，按住左键拖动平移（拖过 3 px 不会误加点）；<kbd>0</kbd> 适应窗口，<kbd>+</kbd> / <kbd>−</kbd> 缩放。</li>
+    <li><b>补检</b>　点击空白处补一个颗粒，点击圆圈删除该颗粒；<kbd>←</kbd> / <kbd>→</kbd> 切换异常帧。</li>
+    <li><b>参考位置</b>　青色虚线圆是缺失颗粒的预测位置（按相邻帧推测），放好点后自动隐去，可用「参考位置」开关。</li>
+    <li><b>「缺 N」标签</b>　点击把画面移到参考位置；目标在画面外时标签贴在画布边缘并带箭头。</li>
+    <li><b>进度</b>　左侧每帧显示 <b>缺 N</b> / <b>1/2</b> / <b>✓</b>，顶部汇总还差多少、完成几帧，防止一帧缺两颗只补了一颗。</li>
+    <li><b>朝向</b>　添加的颗粒只记录中心和半径；curate 会用局部暗色 marker 估朝向，失败则保持无效。</li>
+    <li><b>继续标注</b>　已导出过动作日志时，重新打开同一目录后点「载入已有动作」选那个 json，已补的点会回到画面，再接着补剩下的就行。</li>
+    <li><b>保存</b>　保存后把 <code>review_actions.json</code> 交给 <code>vibrotrack curate</code>。图片不会上传，全部在本地浏览器处理。</li>
+  </ul>
+</dialog>
 <script>
 (() => {
   'use strict';
@@ -93,9 +136,20 @@
     images: new Map(),
     frameIndex: 0,
     mode: 'add',
+    showHints: true,
     edits: new Map(),   // frame -> {removed:Set<number>, added:[{xy_px,radius_px}]}
     history: [],
     imageToken: 0,
+    image: null,
+    view: {scale: 1, x: 0, y: 0},
+    fitScale: 1,
+    viewed: false,
+    drag: null,
+    skipClick: false,
+    hintHitboxes: [],
+    hoverHint: -1,
+    dirHandle: null,
+    loadNote: '',
   };
 
   function frameKey(f) { return String(f); }
@@ -134,21 +188,48 @@
     updateStatus();
   }
 
+  function progressFor(f) {
+    const ed = editFor(f.frame);
+    const current = (f.detections || []).length - ed.removed.size + ed.added.length;
+    const need = Math.max(0, f.expected - f.count);
+    const got = Math.max(0, Math.min(need, current - f.count));
+    return {need, got, current, done: current >= f.expected};
+  }
+
   function buildFrameList() {
     const list = $('frameList');
     list.innerHTML = '';
     state.queue.frames.forEach((f, i) => {
       const li = document.createElement('li');
       li.dataset.index = String(i);
-      li.innerHTML = `<span>frame ${f.frame}</span><span class="delta">${f.delta > 0 ? '+' : ''}${f.delta}</span>`;
+      li.innerHTML = `<span>frame ${f.frame}</span><span class="delta"></span>`;
       li.addEventListener('click', () => selectFrame(i));
       list.appendChild(li);
     });
+    refreshProgress();
+  }
+
+  function refreshProgress() {
+    if (!state.queue) return;
+    let need = 0, got = 0, done = 0;
+    const items = $('frameList').children;
+    state.queue.frames.forEach((f, i) => {
+      const p = progressFor(f);
+      need += p.need; got += p.got; if (p.done) done++;
+      const cell = items[i] && items[i].querySelector('.delta');
+      if (!cell) return;
+      cell.classList.toggle('done', p.done);
+      cell.classList.toggle('partial', !p.done && p.got > 0);
+      cell.textContent = p.done ? '✓' : (p.got > 0 ? `${p.got}/${p.need}` : `缺 ${p.need}`);
+    });
+    $('progress').textContent =
+      `缺 ${need} · 已补 ${got} · 剩 ${need - got} · 完成 ${done}/${state.queue.frames.length} 帧`;
   }
 
   function selectFrame(i) {
     if (!state.queue || i < 0 || i >= state.queue.frames.length) return;
     state.frameIndex = i;
+    state.hoverHint = -1;
     [...$('frameList').children].forEach((li, j) => li.classList.toggle('active', j === i));
     $('prevBtn').disabled = i === 0;
     $('nextBtn').disabled = i === state.queue.frames.length - 1;
@@ -165,7 +246,7 @@
     }
     const cached = state.images.get(name);
     if (cached) {
-      if (token === state.imageToken) setLoad('已载入 ' + name);
+      if (token === state.imageToken && !state.loadNote) setLoad('已载入 ' + name);
       drawWithImage(cached);
       return;
     }
@@ -175,7 +256,7 @@
       URL.revokeObjectURL(url);
       state.images.set(name, img);
       if (token === state.imageToken) {
-        setLoad('已载入 ' + name);
+        if (!state.loadNote) setLoad('已载入 ' + name);
         drawWithImage(img);
       }
     };
@@ -184,39 +265,91 @@
   }
 
   function drawWithImage(img) {
-    const f = currentFrame();
-    if (!f) return;
+    state.image = img;
+    if (!state.viewed && img.naturalWidth) {
+      state.viewed = true;
+      fitView();
+    } else {
+      render();
+    }
+  }
+
+  function fitScaleFor(img) {
+    const cw = canvas.clientWidth || 800, ch = canvas.clientHeight || 600;
+    return Math.min(cw / img.naturalWidth, ch / img.naturalHeight) * 0.98;
+  }
+
+  function fitView() {
+    const img = state.image;
+    if (!img) return;
+    const cw = canvas.clientWidth || 800, ch = canvas.clientHeight || 600;
+    state.fitScale = fitScaleFor(img);
+    state.view.scale = state.fitScale;
+    state.view.x = (cw - img.naturalWidth * state.view.scale) / 2;
+    state.view.y = (ch - img.naturalHeight * state.view.scale) / 2;
+    render();
+  }
+
+  function zoomAt(factor, px, py) {
+    const img = state.image;
+    if (!img) return;
+    const v = state.view;
+    const ix = (px - v.x) / v.scale, iy = (py - v.y) / v.scale;
+    const lo = (state.fitScale || 0.1) * 0.5;
+    v.scale = Math.min(Math.max(v.scale * factor, lo), 8);
+    v.x = px - ix * v.scale;
+    v.y = py - iy * v.scale;
+    render();
+  }
+
+  // Canvas is redrawn at view scale, so zooming stays sharp and the overlays
+  // keep a constant on-screen width (k = 1 / scale).
+  function render() {
+    const img = state.image, f = currentFrame();
+    if (!img || !f) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cw = canvas.clientWidth || 800, ch = canvas.clientHeight || 600;
+    const bw = Math.round(cw * dpr), bh = Math.round(ch * dpr);
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw; canvas.height = bh;
+    }
+    const v = state.view;
     const qshape = f.image_shape || [img.naturalHeight, img.naturalWidth];
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
+    const sx = img.naturalWidth / qshape[1];
+    const sy = img.naturalHeight / qshape[0];
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0);
-    ctx.save();
-    // If the exported image was resized, map queue coordinates into it.
-    const sx = canvas.width / qshape[1];
-    const sy = canvas.height / qshape[0];
-    ctx.scale(sx, sy);
+    ctx.setTransform(dpr * v.scale * sx, 0, 0, dpr * v.scale * sy, dpr * v.x, dpr * v.y);
+    ctx.imageSmoothingEnabled = v.scale < 2;
+    ctx.drawImage(img, 0, 0, qshape[1], qshape[0]);
+    const k = 1 / v.scale;
+    // Below ~30 % the 516 rings overlap into a thick green mesh; show dots instead.
+    const rings = v.scale >= 0.3;
     const ed = editFor(f.frame);
     const auto = f.detections || [];
     auto.forEach((d, idx) => {
       const p = d.xy_px;
       const r = Number(d.radius_px) || Number(state.queue.median_radius_px) || 36;
       if (ed.removed.has(idx)) {
-        ctx.strokeStyle = '#ff5c64'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
-        ctx.beginPath(); ctx.arc(p[0], p[1], r + 2, 0, Math.PI * 2); ctx.stroke();
+        if (!rings) return;
+        ctx.strokeStyle = '#ff5c64'; ctx.lineWidth = 2 * k; ctx.setLineDash([4 * k, 4 * k]);
+        ctx.beginPath(); ctx.arc(p[0], p[1], r + 2 * k, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
         ctx.beginPath();
         ctx.moveTo(p[0] - r * .5, p[1] - r * .5); ctx.lineTo(p[0] + r * .5, p[1] + r * .5);
         ctx.moveTo(p[0] + r * .5, p[1] - r * .5); ctx.lineTo(p[0] - r * .5, p[1] + r * .5);
         ctx.stroke();
+      } else if (!rings) {
+        ctx.fillStyle = 'rgba(32,214,122,0.8)';
+        ctx.beginPath(); ctx.arc(p[0], p[1], 1.6 * k, 0, Math.PI * 2); ctx.fill();
       } else {
-        ctx.strokeStyle = '#20d67a'; ctx.lineWidth = 2;
+        ctx.strokeStyle = '#20d67a'; ctx.lineWidth = 2 * k;
         ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.stroke();
         ctx.fillStyle = '#ffe25a';
-        ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(p[0], p[1], 2.2 * k, 0, Math.PI * 2); ctx.fill();
         const theta = Number(d.theta_rad);
         if (d.angle_valid !== false && Number.isFinite(theta)) {
-          ctx.strokeStyle = '#ffb02e'; ctx.lineWidth = 2;
+          ctx.strokeStyle = '#ffb02e'; ctx.lineWidth = 2 * k;
           ctx.beginPath(); ctx.moveTo(p[0], p[1]);
           // y-up angle in image coordinates: MINUS sin(theta).
           ctx.lineTo(p[0] + Math.cos(theta) * r * .95,
@@ -227,18 +360,111 @@
     });
     ed.added.forEach((d) => {
       const p = d.xy_px, r = Number(d.radius_px) || 36;
-      ctx.strokeStyle = '#d78cff'; ctx.lineWidth = 2;
+      ctx.strokeStyle = '#d78cff'; ctx.lineWidth = 2 * k;
       ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = '#d78cff';
-      ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#d78cff'; ctx.font = '11px system-ui'; ctx.fillText('manual', p[0] + r + 4, p[1] - 3);
+      ctx.beginPath(); ctx.arc(p[0], p[1], 2.2 * k, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#d78cff'; ctx.font = `${11 * k}px system-ui`;
+      ctx.fillText('manual', p[0] + r + 4 * k, p[1] - 3 * k);
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (state.showHints && f.hints && f.hints.length) drawHints(f, dpr, sx, sy);
+    $('zoomLabel').textContent = Math.round(state.view.scale * 100) + '%';
+  }
+
+  function roundRectPath(x, y, w, h, r) {
+    if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); return; }
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+  }
+
+  // Hints are drawn in screen space so the marker stays readable at any zoom.
+  function drawHints(f, dpr, sx, sy) {
+    const v = state.view;
+    const ed = editFor(f.frame);
+    const hr = Number(state.queue.median_radius_px) || 36;
+    const n = f.hints.length;
+    const vw = canvas.clientWidth || canvas.width / dpr;
+    const vh = canvas.clientHeight || canvas.height / dpr;
+    state.hintHitboxes = [];
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = '600 11px system-ui, "Segoe UI", sans-serif';
+    ctx.textBaseline = 'alphabetic';
+    f.hints.forEach((h, i) => {
+      const covered = ed.added.some((a) =>
+        Math.hypot(a.xy_px[0] - h.xy_px[0], a.xy_px[1] - h.xy_px[1]) <= hr * 1.1);
+      if (covered) return;
+      const px = v.x + h.xy_px[0] * v.scale * sx;
+      const py = v.y + h.xy_px[1] * v.scale * sy;
+      const rs = Math.max(hr * v.scale, 8);
+      const onScreen = px > 0 && px < vw && py > 0 && py < vh;
+      const text = n > 1 ? `缺 ${i + 1}` : '缺 1';
+      const tw = ctx.measureText(text).width;
+      const bw = tw + 10, bh = 17;
+      let bx, by;
+      if (onScreen) {
+        ctx.fillStyle = 'rgba(57,213,255,0.20)';
+        ctx.beginPath(); ctx.arc(px, py, rs, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#39d5ff'; ctx.lineWidth = 1.6; ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.arc(px, py, rs, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        const arm = Math.max(rs * 0.55, 7);
+        ctx.beginPath();
+        ctx.moveTo(px - arm, py); ctx.lineTo(px + arm, py);
+        ctx.moveTo(px, py - arm); ctx.lineTo(px, py + arm);
+        ctx.stroke();
+        bx = Math.min(Math.max(px - bw / 2, 2), Math.max(vw - bw - 2, 2));
+        by = Math.min(Math.max(py - rs - bh - 5, 2), Math.max(vh - bh - 2, 2));
+      } else {
+        // Keep the chip on screen and point an arrow at the target.
+        bx = Math.min(Math.max(px - bw / 2, 4), Math.max(vw - bw - 4, 4));
+        by = Math.min(Math.max(py - bh / 2, 4), Math.max(vh - bh - 4, 4));
+        const cxp = bx + bw / 2, cyp = by + bh / 2;
+        const ang = Math.atan2(py - cyp, px - cxp);
+        const l = Math.hypot(bw, bh) / 2 + 9;
+        const ax = cxp + Math.cos(ang) * l, ay = cyp + Math.sin(ang) * l;
+        ctx.fillStyle = '#39d5ff';
+        ctx.beginPath();
+        ctx.moveTo(ax + Math.cos(ang) * 8, ay + Math.sin(ang) * 8);
+        ctx.lineTo(ax + Math.cos(ang + 2.4) * 7, ay + Math.sin(ang + 2.4) * 7);
+        ctx.lineTo(ax + Math.cos(ang - 2.4) * 7, ay + Math.sin(ang - 2.4) * 7);
+        ctx.closePath(); ctx.fill();
+      }
+      const hot = state.hoverHint === i;
+      ctx.fillStyle = hot ? 'rgba(38,92,118,0.96)'
+                          : (onScreen ? 'rgba(8,18,26,0.92)' : 'rgba(14,42,56,0.96)');
+      roundRectPath(bx, by, bw, bh, 4);
+      ctx.fill();
+      ctx.strokeStyle = '#39d5ff';
+      ctx.lineWidth = onScreen ? 1 : 1.6;
+      ctx.stroke();
+      ctx.fillStyle = '#9fe9ff';
+      ctx.fillText(text, bx + 5, by + 12);
+      state.hintHitboxes.push({x: bx, y: by, w: bw, h: bh, ix: h.xy_px[0], iy: h.xy_px[1], i});
     });
     ctx.restore();
+  }
+
+  function centreOn(ix, iy) {
+    const img = state.image, f = currentFrame();
+    if (!img || !f) return;
+    const qshape = f.image_shape || [img.naturalHeight, img.naturalWidth];
+    const sx = img.naturalWidth / qshape[1];
+    const sy = img.naturalHeight / qshape[0];
+    const v = state.view;
+    v.x = (canvas.clientWidth || 800) / 2 - ix * v.scale * sx;
+    v.y = (canvas.clientHeight || 600) / 2 - iy * v.scale * sy;
+    render();
   }
 
   function draw() {
     const f = currentFrame();
     if (!f) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       $('empty').style.display = '';
       return;
@@ -253,16 +479,25 @@
     if (!f) { $('status').textContent = ''; return; }
     const ed = editFor(f.frame);
     const current = (f.detections || []).length - ed.removed.size + ed.added.length;
-    $('status').textContent = `auto ${f.count} → current ${current}  (add ${ed.added.length}, remove ${ed.removed.size})`;
+    const p = progressFor(f);
+    const tail = p.done ? '  ✓ 已补齐' : `  还缺 ${p.need - p.got}`;
+    $('status').textContent = `auto ${f.count} → current ${current}  (add ${ed.added.length}, remove ${ed.removed.size})${tail}`;
+    refreshProgress();
+    scheduleSave();
   }
 
   function canvasPoint(ev) {
     const rect = canvas.getBoundingClientRect();
-    const x = (ev.clientX - rect.left) * canvas.width / rect.width;
-    const y = (ev.clientY - rect.top) * canvas.height / rect.height;
+    const v = state.view;
     const f = currentFrame();
-    const qshape = f.image_shape || [canvas.height, canvas.width];
-    return [x * qshape[1] / canvas.width, y * qshape[0] / canvas.height];
+    const img = state.image;
+    const qshape = f && f.image_shape
+      ? f.image_shape
+      : (img ? [img.naturalHeight, img.naturalWidth] : [1, 1]);
+    const sx = img ? img.naturalWidth / qshape[1] : 1;
+    const sy = img ? img.naturalHeight / qshape[0] : 1;
+    return [(ev.clientX - rect.left - v.x) / (v.scale * sx),
+            (ev.clientY - rect.top - v.y) / (v.scale * sy)];
   }
 
   function nearestDetection(ed, point) {
@@ -279,6 +514,15 @@
   canvas.addEventListener('click', (ev) => {
     const f = currentFrame();
     if (!f) return;
+    if (state.skipClick) { state.skipClick = false; return; }
+    const rect = canvas.getBoundingClientRect();
+    const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+    for (const b of state.hintHitboxes) {
+      if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+        centreOn(b.ix, b.iy);
+        return;
+      }
+    }
     const ed = editFor(f.frame);
     const p = canvasPoint(ev);
     if (state.mode === 'add') {
@@ -325,12 +569,98 @@
   // clicking a particle centre. It follows the mouse only inside the canvas.
   const cursorDot = $('cursorDot');
   canvas.addEventListener('mouseenter', () => { cursorDot.style.display = 'block'; });
-  canvas.addEventListener('mouseleave', () => { cursorDot.style.display = 'none'; });
+  canvas.addEventListener('mouseleave', () => {
+    cursorDot.style.display = 'none';
+    if (state.hoverHint >= 0) { state.hoverHint = -1; render(); }
+  });
   canvas.addEventListener('mousemove', (ev) => {
     cursorDot.style.left = ev.clientX + 'px';
     cursorDot.style.top = ev.clientY + 'px';
+    if (state.drag) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+    let hit = -1;
+    state.hintHitboxes.forEach((b) => {
+      if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) hit = b.i;
+    });
+    if (hit !== state.hoverHint) { state.hoverHint = hit; render(); }
+  });
+
+  $('helpBtn').addEventListener('click', () => $('helpDlg').showModal());
+  $('helpClose').addEventListener('click', () => $('helpDlg').close());
+  $('helpDlg').addEventListener('click', (ev) => {
+    if (ev.target === $('helpDlg')) $('helpDlg').close();
+  });
+
+  // Drag pans the view; a press that moves less than 3 px stays a click.
+  canvas.addEventListener('mousedown', (ev) => {
+    if (!state.image) return;
+    if (ev.button !== 0 && ev.button !== 1) return;
+    state.skipClick = false;
+    state.drag = {x: ev.clientX, y: ev.clientY,
+                  vx: state.view.x, vy: state.view.y, moved: false};
+  });
+  window.addEventListener('mousemove', (ev) => {
+    const d = state.drag;
+    if (!d) return;
+    const dx = ev.clientX - d.x, dy = ev.clientY - d.y;
+    if (!d.moved && Math.hypot(dx, dy) > 3) d.moved = true;
+    if (d.moved) {
+      state.view.x = d.vx + dx;
+      state.view.y = d.vy + dy;
+      render();
+    }
+  });
+  window.addEventListener('mouseup', () => {
+    const d = state.drag;
+    if (!d) return;
+    state.drag = null;
+    if (d.moved) {
+      // Skip only the click this drag produces; later clicks must work again.
+      state.skipClick = true;
+      setTimeout(() => { state.skipClick = false; }, 0);
+    }
+  });
+
+  canvas.addEventListener('wheel', (ev) => {
+    if (!state.image) return;
+    ev.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const step = ev.deltaMode === 1 ? 0.05 : 0.0015;
+    zoomAt(Math.exp(-ev.deltaY * step),
+           ev.clientX - rect.left, ev.clientY - rect.top);
+  }, {passive: false});
+
+  function zoomCentre(factor) {
+    if (!state.image) return;
+    zoomAt(factor, canvas.clientWidth / 2, canvas.clientHeight / 2);
+  }
+  $('zoomInBtn').onclick = () => zoomCentre(1.25);
+  $('zoomOutBtn').onclick = () => zoomCentre(0.8);
+  $('fitBtn').onclick = fitView;
+  $('oneToOneBtn').onclick = () => {
+    const img = state.image;
+    if (!img) return;
+    const v = state.view;
+    const cx = canvas.clientWidth / 2, cy = canvas.clientHeight / 2;
+    const ix = (cx - v.x) / v.scale, iy = (cy - v.y) / v.scale;
+    v.scale = 1;
+    v.x = cx - ix;
+    v.y = cy - iy;
+    render();
+  };
+  window.addEventListener('resize', () => {
+    if (!state.image) return;
+    const wasFit = Math.abs(state.view.scale - state.fitScale) < 1e-6;
+    state.fitScale = fitScaleFor(state.image);
+    if (wasFit) fitView(); else render();
   });
   $('addBtn').onclick = () => setMode('add');
+  $('hintBtn').onclick = () => {
+    state.showHints = !state.showHints;
+    $('hintBtn').classList.toggle('active', state.showHints);
+    draw();
+  };
   $('removeBtn').onclick = () => setMode('remove');
   $('undoBtn').onclick = undo;
   $('prevBtn').onclick = () => selectFrame(state.frameIndex - 1);
@@ -339,45 +669,110 @@
     if (!state.queue) return;
     if (ev.key === 'ArrowLeft') selectFrame(state.frameIndex - 1);
     if (ev.key === 'ArrowRight') selectFrame(state.frameIndex + 1);
+    if (ev.key === '+' || ev.key === '=') zoomCentre(1.25);
+    if (ev.key === '-' || ev.key === '_') zoomCentre(0.8);
+    if (ev.key === '0') fitView();
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
   });
 
-  $('folderInput').addEventListener('change', () => {
-    state.files.clear();
-    for (const f of $('folderInput').files) {
-      state.files.set(f.name, f);
-      if (f.webkitRelativePath) state.files.set(f.webkitRelativePath, f);
+  $('folderInput').addEventListener('change', async () => {
+    const entries = [...$('folderInput').files]
+      .map((f) => ({path: f.webkitRelativePath || f.name, file: f}));
+    if (!entries.length) return;
+    if (entries.some((e) => /\.json$/i.test(e.path))) {
+      try { await ingestEntries(entries); }
+      catch (err) { setLoad('目录读取失败：' + err.message, true); }
+      return;
     }
-    setLoad(`${state.files.size} 个图片文件可选`);
+    state.files.clear();
+    for (const e of entries) state.files.set(e.path.split('/').pop(), e.file);
+    setLoad(`${state.files.size} 张帧图已载入`);
     draw();
   });
 
-  $('queueInput').addEventListener('change', async () => {
-    const file = $('queueInput').files[0];
-    if (!file) return;
-    try {
-      const q = JSON.parse(await file.text());
-      if (q.schema !== 'review-queue/v1') throw new Error('schema 不是 review-queue/v1');
-      state.queue = q;
-      state.edits.clear();
-      state.history = [];
-      state.frameIndex = 0;
-      $('undoBtn').disabled = true;
-      $('saveBtn').disabled = false;
-      buildFrameList();
-      $('stats').textContent = `${q.case} · ${q.frames.length}/${q.count_stats.n_frames} 帧 · 期望 ${q.expected_count} · 中位半径 ${q.median_radius_px?.toFixed?.(2) ?? q.median_radius_px} px`;
-      selectFrame(0);
-      setLoad('queue 已载入；请选择 review/frames 文件夹');
-    } catch (err) {
-      state.queue = null; state.edits.clear(); $('saveBtn').disabled = true;
-      $('stats').textContent = '未载入';
-      $('frameList').innerHTML = '';
-      setLoad('queue 读取失败：' + err.message, true);
-    }
-  });
+  function applyQueue(q) {
+    if (!q || q.schema !== 'review-queue/v1') throw new Error('schema 不是 review-queue/v1');
+    state.queue = q;
+    state.edits.clear();
+    state.history = [];
+    state.frameIndex = 0;
+    state.image = null;
+    state.viewed = false;
+    $('undoBtn').disabled = true;
+    $('saveBtn').disabled = false;
+    $('importBtn').disabled = false;
+    buildFrameList();
+    $('stats').textContent = `${q.case} · ${q.frames.length}/${q.count_stats.n_frames} 帧 · 期望 ${q.expected_count} · 中位半径 ${q.median_radius_px?.toFixed?.(2) ?? q.median_radius_px} px`;
+    selectFrame(0);
+  }
 
-  $('saveBtn').onclick = () => {
-    if (!state.queue) return;
+  // Files from a directory picker or a drop: [{path, file}]. The queue JSON and
+  // the frames it references are picked out by name, so one gesture loads both.
+  async function ingestEntries(entries) {
+    const jsons = entries.filter((e) => /\.json$/i.test(e.path));
+    jsons.sort((a, b) => Number(/review_queue\.json$/i.test(b.path)) - Number(/review_queue\.json$/i.test(a.path)));
+    let queue = null, badSchema = null;
+    for (const e of jsons) {
+      try {
+        const q = JSON.parse(await e.file.text());
+        if (q.schema === 'review-queue/v1') { queue = q; break; }
+        badSchema = badSchema || e.path.split('/').pop();
+      } catch (err) { /* not the queue, keep looking */ }
+    }
+    if (!queue) {
+      const images = entries.filter((e) => /\.(png|jpe?g|tiff?)$/i.test(e.path)).length;
+      const dirs = [...new Set(entries.map((e) => e.path.split('/').slice(0, -1).join('/')))];
+      let msg = `没有找到 review-queue/v1 的 JSON：收到 ${entries.length} 个文件`;
+      if (images) msg += `，其中 ${images} 张图片`;
+      if (dirs.length && dirs[0]) msg += `，目录 ${dirs.slice(0, 3).join('、')}`;
+      if (badSchema) msg += `；${badSchema} 不是 review-queue/v1`;
+      msg += '。请拖入包含 review_queue.json 和 frames 的 review 目录（上一级，不是 frames 本身）';
+      throw new Error(msg);
+    }
+    const need = new Set(queue.frames
+      .map((f) => (f.image || '').split('/').pop())
+      .filter(Boolean));
+    state.files.clear();
+    for (const e of entries) {
+      const base = e.path.split('/').pop();
+      if (need.has(base)) state.files.set(base, e.file);
+    }
+    applyQueue(queue);
+    const log = await findActionsLog(entries, queue);
+    let restored = 0;
+    if (log) {
+      try {
+        restored = importActions(log).n;
+        lastSavedKey = actionsKey();
+      } catch (err) { restored = 0; }
+    }
+    const missing = need.size - state.files.size;
+    if (missing > 0) $('stats').textContent += ` · 缺 ${missing} 张帧图`;
+    let msg = missing ? `已载入 ${state.files.size} 张帧图，缺 ${missing} 张`
+                      : `${state.files.size} 张帧图已载入，可以开始点`;
+    if (restored) msg += ` · 已恢复 ${restored} 条历史动作`;
+    state.loadNote = msg;
+    setLoad(msg, missing > 0);
+    draw();
+  }
+
+  // A review directory may already hold the action log from an earlier
+  // session; pick it up automatically when the same directory is opened again.
+  async function findActionsLog(entries, queue) {
+    const isJson = (path) => String(path).toLowerCase().endsWith('.json');
+    const isActions = (path) => String(path).toLowerCase().indexOf('review_actions') >= 0;
+    const cands = entries.filter((e) => isJson(e.path));
+    cands.sort((a, b) => Number(isActions(b.path)) - Number(isActions(a.path)));
+    for (const e of cands) {
+      try {
+        const o = JSON.parse(await e.file.text());
+        if (o && o.schema === 'review-actions/v1' && (!o.case || o.case === queue.case)) return o;
+      } catch (err) { /* not an action log */ }
+    }
+    return null;
+  }
+
+  function buildActions() {
     const actions = [];
     for (const f of state.queue.frames) {
       const ed = editFor(f.frame);
@@ -389,20 +784,224 @@
         actions.push({frame: f.frame, op: 'add', xy_px: [d.xy_px[0], d.xy_px[1]], radius_px: d.radius_px, reason: 'manual_add'});
       }
     }
-    const out = {
+    return {
       schema: 'review-actions/v1',
       case: state.queue.case,
       created_at: new Date().toISOString(),
       expected_count: state.queue.expected_count,
-      actions: actions,
+      actions,
     };
-    const blob = new Blob([JSON.stringify(out, null, 2) + '\n'], {type: 'application/json'});
+  }
+
+  function actionsText() {
+    return JSON.stringify(buildActions(), null, 2) + String.fromCharCode(10);
+  }
+
+  function setSaveState(msg, bad) {
+    const el = $('saveState');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = bad ? 'var(--red)' : 'var(--muted)';
+  }
+
+  let saveTimer = null;
+  // Compare actions only: created_at changes on every build, so comparing the
+  // whole file would rewrite it on every frame switch.
+  let lastSavedKey = null;
+  const actionsKey = () => JSON.stringify(buildActions().actions);
+  function scheduleSave() {
+    if (!state.queue) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(flushSave, 300);
+  }
+
+  async function flushSave() {
+    if (!state.queue) return;
+    let text, key;
+    try { key = actionsKey(); text = actionsText(); } catch (err) { return; }
+    if (key === lastSavedKey) return;
+    let wrote = false;
+    if (state.dirHandle) {
+      try {
+        const fh = await state.dirHandle.getFileHandle('review_actions.json', {create: true});
+        const w = await fh.createWritable();
+        await w.write(text);
+        await w.close();
+        wrote = true;
+        setSaveState('已自动保存 ' + new Date().toLocaleTimeString());
+      } catch (err) {
+        setSaveState('目录不可写：' + err.message, true);
+      }
+    }
+    try { localStorage.setItem('vibrotrack:actions:' + state.queue.case, text); } catch (err) { /* quota */ }
+    lastSavedKey = key;
+    if (!wrote) setSaveState('已暂存在浏览器（未获得目录写权限）');
+  }
+
+  async function filesFromDirectoryHandle(dir) {
+    const out = [];
+    async function walk(handle, prefix, depth) {
+      for await (const [name, h] of handle.entries()) {
+        if (h.kind === 'file') out.push({path: prefix + name, file: await h.getFile()});
+        else if (h.kind === 'directory' && depth < 4) await walk(h, prefix + name + '/', depth + 1);
+      }
+    }
+    await walk(dir, '', 0);
+    return out;
+  }
+
+  function filesFromEntry(entry, prefix = '', depth = 0) {
+    return new Promise((resolve) => {
+      if (entry.isFile) {
+        entry.file((f) => resolve([{path: prefix + entry.name, file: f}]), () => resolve([]));
+      } else if (entry.isDirectory && depth < 4) {
+        const reader = entry.createReader();
+        const out = [];
+        const read = () => reader.readEntries(async (ents) => {
+          if (!ents.length) { resolve(out); return; }
+          for (const e of ents) out.push(...await filesFromEntry(e, prefix + entry.name + '/', depth + 1));
+          read();
+        }, () => resolve(out));
+        read();
+      } else {
+        resolve([]);
+      }
+    });
+  }
+
+  $('pickBtn').onclick = async () => {
+    if (!window.showDirectoryPicker) {
+      // Firefox/Safari: fall back to a folder input, which also yields the
+      // queue JSON when the review directory itself is selected.
+      $('folderInput').click();
+      return;
+    }
+    try {
+      const dir = await window.showDirectoryPicker({mode: 'readwrite'});
+      state.dirHandle = dir;
+      setLoad('读取目录…');
+      await ingestEntries(await filesFromDirectoryHandle(dir));
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      setLoad('目录读取失败：' + err.message, true);
+    }
+  };
+
+  let dragDepth = 0;
+  document.addEventListener('dragenter', (ev) => {
+    ev.preventDefault();
+    dragDepth++;
+    document.body.classList.add('dropping');
+  });
+  document.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) document.body.classList.remove('dropping');
+  });
+  document.addEventListener('dragover', (ev) => { ev.preventDefault(); });
+  document.addEventListener('drop', async (ev) => {
+    ev.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove('dropping');
+    const items = [...(ev.dataTransfer.items || [])];
+    setLoad('读取拖入的内容…');
+    // Chrome's File System Access handle is the reliable way to get a dropped
+    // folder; create the promises during the event before awaiting anything.
+    const handles = items.map((it) => (it.getAsFileSystemHandle
+      ? it.getAsFileSystemHandle().catch(() => null) : null));
+    for (const hp of handles) {
+      const h = hp ? await hp : null;
+      if (h && h.kind === 'directory') {
+        try { await ingestEntries(await filesFromDirectoryHandle(h)); }
+        catch (err) { setLoad('拖入目录读取失败：' + err.message, true); }
+        return;
+      }
+    }
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+      if (entry && entry.isDirectory) {
+        try { await ingestEntries(await filesFromEntry(entry)); }
+        catch (err) { setLoad('拖入目录读取失败：' + err.message, true); }
+        return;
+      }
+    }
+    const files = [...(ev.dataTransfer.files || [])].map((f) => ({path: f.name, file: f}));
+    if (!files.length) { setLoad('没有读到拖入的文件（可以试试点「打开 review 目录」）', true); return; }
+    try { await ingestEntries(files); }
+    catch (err) { setLoad('拖入文件读取失败：' + err.message, true); }
+  });
+
+  $('queueInput').addEventListener('change', async () => {
+    const file = $('queueInput').files[0];
+    if (!file) return;
+    try {
+      applyQueue(JSON.parse(await file.text()));
+      setLoad('queue 已载入；请选择 review/frames 文件夹');
+    } catch (err) {
+      state.queue = null; state.edits.clear(); $('saveBtn').disabled = true;
+      $('stats').textContent = '未载入';
+      $('frameList').innerHTML = '';
+      setLoad('queue 读取失败：' + err.message, true);
+    }
+  });
+
+  function importActions(log) {
+    if (!log || log.schema !== 'review-actions/v1') throw new Error('schema 不是 review-actions/v1');
+    const byFrame = new Map(state.queue.frames.map((f) => [f.frame, f]));
+    const tol = Number(state.queue.median_radius_px) || 36;
+    let n = 0, skipped = 0;
+    for (const a of log.actions || []) {
+      const f = byFrame.get(a.frame);
+      if (!f || !a.xy_px) { skipped++; continue; }
+      const ed = editFor(f.frame);
+      if (a.op === 'add') {
+        ed.added.push({xy_px: [a.xy_px[0], a.xy_px[1]],
+                       radius_px: Number(a.radius_px) || tol});
+        n++;
+      } else if (a.op === 'remove') {
+        let best = -1, bestD = Infinity;
+        (f.detections || []).forEach((d, i) => {
+          const dd = Math.hypot(d.xy_px[0] - a.xy_px[0], d.xy_px[1] - a.xy_px[1]);
+          if (dd < bestD) { bestD = dd; best = i; }
+        });
+        if (best >= 0 && bestD <= tol) { ed.removed.add(best); n++; }
+        else skipped++;
+      } else {
+        skipped++;
+      }
+    }
+    state.history = [];
+    $('undoBtn').disabled = true;
+    buildFrameList();
+    draw();
+    updateStatus();
+    return {n, skipped};
+  }
+
+  $('importBtn').addEventListener('click', () => $('actionsInput').click());
+  $('actionsInput').addEventListener('change', async () => {
+    const file = $('actionsInput').files[0];
+    if (!file || !state.queue) return;
+    try {
+      const log = JSON.parse(await file.text());
+      const {n, skipped} = importActions(log);
+      setLoad(`已载入 ${n} 条历史动作` + (skipped ? `（${skipped} 条不在本队列里，已跳过）` : ''), false);
+    } catch (err) {
+      setLoad('动作导入失败：' + err.message, true);
+    }
+    $('actionsInput').value = '';
+  });
+
+  $('saveBtn').onclick = () => {
+    if (!state.queue) return;
+    const out = buildActions();
+    const blob = new Blob([actionsText()], {type: 'application/json'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'review_actions.json';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    setLoad(`已生成 ${actions.length} 条动作`);
+    lastSavedKey = actionsKey();
+    setLoad(`已生成 ${out.actions.length} 条动作`);
   };
 })();
 </script>

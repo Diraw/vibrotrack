@@ -136,3 +136,13 @@ def test_curate_can_estimate_manual_orientation(tmp_path):
         i = int(manual[0])
         assert bool(z['angle_valid'][i]) is True
         assert abs(float(z['theta_rad'][i]) - np.pi / 2) < 0.25
+
+
+def test_queue_hints_point_at_the_missing_particle(tmp_path):
+    case = _make_case(tmp_path)
+    queue, _ = review.build_queue(case)
+    hints = queue['frames'][0]['hints']
+    assert len(hints) == 1
+    assert hints[0]['segments'] == [1]
+    assert hints[0]['xy_px'] == [30.0, 10.0]
+    assert hints[0]['distance'] == 1
