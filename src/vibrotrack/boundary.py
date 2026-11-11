@@ -44,10 +44,11 @@ def _sample_indices(n, k):
 
 
 def _probe(files, indices, levels):
-    """Return (temporal maximum, temporal std) over the sampled frames.
+    """Return (temporal mean, temporal maximum, temporal std).
 
     The maximum recovers the filled interior.  The standard deviation separates
-    moving particles (high std) from a frozen-particle ring / static wall (low std).
+    moving particles (high std) from frozen particles / a static wall (low std).
+    The mean is used to find the individual frozen discs on the boundary.
     """
     probe = None
     total = None
@@ -71,7 +72,8 @@ def _probe(files, indices, levels):
         raise ValueError('no readable frames')
     mean = total / n
     var = total_sq / n - mean * mean
-    return probe.astype(np.uint8), np.sqrt(np.maximum(var, 0.0)).astype(np.float32)
+    return (mean.astype(np.uint8), probe.astype(np.uint8),
+            np.sqrt(np.maximum(var, 0.0)).astype(np.float32))
 
 
 def _otsu(probe, threshold=None):
@@ -154,6 +156,23 @@ def _contour_circle(probe, threshold):
     return float(x), float(y), float(r), c
 
 
+def _contour_polygon(probe, threshold):
+    """Return a smoothed, non-convex boundary polygon and the threshold."""
+    level, fg = _foreground_mask(probe, threshold)
+    contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        raise ValueError('no contour found')
+    c = max(contours, key=cv2.contourArea)
+    perimeter = max(1.0, cv2.arcLength(c, True))
+    # Keep the actual concavities; only remove pixel-level stair steps.  This is
+    # deliberately not a convex hull: an L-shaped or keyhole cell must keep its
+    # missing corner outside the mask.
+    c = cv2.approxPolyDP(c, max(1.0, 0.0015 * perimeter), True)
+    if len(c) < 3:
+        c = cv2.convexHull(c)
+    return c.reshape(-1, 2), float(level)
+
+
 def _hull(contour):
     return cv2.convexHull(contour)
 
@@ -204,6 +223,90 @@ def _static_ring_inner_radius(std, center, outer_radius):
     }
 
 
+def _frozen_disks(mean, std, *, center, base_radius, outer_radius,
+                  particle_radius_px, active_std):
+    """Find individual static/frozen discs on the boundary.
+
+    A boundary is often a circular frame *plus* discrete frozen particles sitting
+    on it.  A single radial cutoff cannot represent that: it cuts through the
+    frozen discs and leaves crescents inside the mask.  Detect small circles in
+    the temporal mean, keep those whose interior has low temporal std, and let
+    the caller subtract them as circular bites.
+    """
+    if particle_radius_px is None or particle_radius_px <= 0:
+        return []
+    h, w = mean.shape
+    scale = min(1.0, 1600.0 / float(max(h, w)))
+    if scale < 1.0:
+        small = cv2.resize(mean, None, fx=scale, fy=scale,
+                           interpolation=cv2.INTER_AREA)
+    else:
+        small = mean
+    blur = cv2.GaussianBlur(small, (7, 7), 1.5)
+    rmin = max(4, int(round(0.55 * particle_radius_px * scale)))
+    rmax = max(rmin + 2, int(round(1.45 * particle_radius_px * scale)))
+    min_dist = max(8, int(round(0.85 * particle_radius_px * scale)))
+    circles = None
+    for param2 in (30, 24, 18):
+        found = cv2.HoughCircles(
+            blur, cv2.HOUGH_GRADIENT, dp=1.5, minDist=min_dist,
+            param1=80, param2=param2, minRadius=rmin, maxRadius=rmax)
+        if found is not None and len(found[0]):
+            circles = found[0]
+            break
+    if circles is None:
+        return []
+    if active_std is None or not np.isfinite(active_std) or active_std <= 0:
+        static_threshold = 6.0
+    else:
+        static_threshold = max(3.0, 0.25 * float(active_std))
+    bright_min = max(15.0, 0.20 * float(np.percentile(mean, 95)))
+    candidates = []
+    for x, y, r in np.asarray(circles, dtype=np.float64):
+        x /= scale
+        y /= scale
+        r /= scale
+        rad = math.hypot(x - center[0], y - center[1])
+        # Only discs that intersect the active-region boundary can create a
+        # crescent.  The outer ring itself is also allowed; it usually lies just
+        # outside the base circle and is harmless.
+        if rad < base_radius - 2.2 * particle_radius_px:
+            continue
+        if rad > outer_radius + 0.5 * particle_radius_px:
+            continue
+        b = int(math.ceil(0.65 * r))
+        x0, x1 = max(0, int(round(x)) - b), min(w, int(round(x)) + b + 1)
+        y0, y1 = max(0, int(round(y)) - b), min(h, int(round(y)) + b + 1)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        sy, sx = np.ogrid[y0:y1, x0:x1]
+        inside = (sx - x) ** 2 + (sy - y) ** 2 <= (0.65 * r) ** 2
+        if not inside.any():
+            continue
+        std_med = float(np.median(std[y0:y1, x0:x1][inside]))
+        mean_med = float(np.median(mean[y0:y1, x0:x1][inside]))
+        if std_med > static_threshold or mean_med < bright_min:
+            continue
+        candidates.append({
+            'center_px': [float(x), float(y)],
+            'radius_px': float(r),
+            'std': std_med,
+            'mean': mean_med,
+        })
+    # Hough can return the same disc more than once; keep the first candidate.
+    candidates.sort(key=lambda q: (math.hypot(q['center_px'][0] - center[0],
+                                               q['center_px'][1] - center[1]),
+                                   q['center_px'][1], q['center_px'][0]))
+    keep = []
+    min_sep = 0.8 * particle_radius_px
+    for q in candidates:
+        if all(math.hypot(q['center_px'][0] - p['center_px'][0],
+                          q['center_px'][1] - p['center_px'][1]) >= min_sep
+               for p in keep):
+            keep.append(q)
+    return keep
+
+
 def _circle_mask(shape, cx, cy, radius, margin):
     h, w = shape
     mask = np.zeros((h, w), np.uint8)
@@ -226,25 +329,39 @@ def _polygon_mask(shape, hull, margin):
 
 
 def _overlay(frame, mask, *, shape, center=None, radius=None, outer_radius=None,
-             ring_detected=False, hull=None, label='proposed mask'):
+             ring_detected=False, frozen_disks=None, hull=None,
+             label='proposed mask'):
+    frozen_disks = list(frozen_disks or [])
     rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
     inside = mask > 0
     green = np.zeros_like(rgb)
     green[..., 1] = 255
     rgb[inside] = (0.65 * rgb[inside] + 0.35 * green[inside]).astype(np.uint8)
     if shape == 'circle' and center is not None and radius is not None:
-        cv2.circle(rgb, (int(round(center[0])), int(round(center[1]))),
-                   int(round(radius)), (0, 255, 0), 4)
+        if frozen_disks:
+            # The boundary is a circle with circular bites, not a plain circle.
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(rgb, contours, -1, (0, 255, 0), 4)
+        else:
+            cv2.circle(rgb, (int(round(center[0])), int(round(center[1]))),
+                       int(round(radius)), (0, 255, 0), 4)
         if ring_detected and outer_radius is not None and outer_radius > radius + 1:
             cv2.circle(rgb, (int(round(center[0])), int(round(center[1]))),
-                       int(round(outer_radius)), (0, 165, 255), 3)
+                       int(round(outer_radius)), (255, 165, 0), 3)
     elif hull is not None:
         cv2.polylines(rgb, [np.asarray(hull, np.int32)], True, (0, 255, 0), 4)
+    for disc in frozen_disks:
+        x, y = disc['center_px']
+        cv2.circle(rgb, (int(round(x)), int(round(y))),
+                   int(round(disc['radius_px'])), (255, 140, 0), 2)
     text = '%s  %s' % (label, shape)
     if shape == 'circle' and center is not None and radius is not None:
         text += '  c=(%.1f, %.1f)  mask r=%.1f' % (center[0], center[1], radius)
         if ring_detected and outer_radius is not None:
-            text += '  outer/frozen ring r=%.1f' % outer_radius
+            text += '  outer r=%.1f' % outer_radius
+        if frozen_disks:
+            text += '  frozen discs=%d' % len(frozen_disks)
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
     cv2.rectangle(rgb, (18, 18), (28 + tw, 28 + th + 18), (0, 0, 0), -1)
     cv2.putText(rgb, text, (24, 24 + th), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
@@ -252,78 +369,159 @@ def _overlay(frame, mask, *, shape, center=None, radius=None, outer_radius=None,
     return rgb
 
 
+def load_points(path):
+    """Load a manual polygon from JSON.
+
+    Accepted forms::
+
+        [[x, y], ...]
+        {"points_px": [[x, y], ...], "holes_px": [[...], ...]}
+    """
+    rec = json.loads(Path(path).read_text(encoding='utf-8'))
+    if isinstance(rec, list):
+        points = rec
+        holes = []
+    elif isinstance(rec, dict):
+        points = rec.get('points_px', rec.get('points'))
+        holes = rec.get('holes_px', [])
+    else:
+        raise ValueError('manual points JSON must be a list or an object')
+    if not points or len(points) < 3:
+        raise ValueError('manual polygon needs at least three points')
+
+    def clean(poly):
+        out = []
+        for p in poly:
+            if len(p) != 2:
+                raise ValueError('each point must be [x, y]')
+            out.append([float(p[0]), float(p[1])])
+        return out
+    return clean(points), [clean(h) for h in holes if len(h) >= 3]
+
+
+def _manual_mask(shape, points, holes, margin_px):
+    h, w = shape
+    mask = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(mask, [np.asarray(points, dtype=np.int32)], 255)
+    for hole in holes:
+        cv2.fillPoly(mask, [np.asarray(hole, dtype=np.int32)], 0)
+    if margin_px:
+        k = 2 * int(math.ceil(abs(margin_px))) + 1
+        op = cv2.erode if margin_px > 0 else cv2.dilate
+        mask = op(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    return mask
+
+
 def propose(files, *, levels=(128.0, 28224.0), n_frames=DEFAULT_FRAMES,
             shape='auto', margin_px=DEFAULT_MARGIN_PX, threshold=None,
-            preview_frame=None):
+            preview_frame=None, particle_radius_px=None):
     """Return ``(mask, info, overlay_rgb)`` for a list of frame paths."""
     if not files:
         raise ValueError('no frames supplied')
     indices = _sample_indices(len(files), n_frames)
-    probe, std = _probe(files, indices, levels)
+    mean, probe, std = _probe(files, indices, levels)
     h, w = probe.shape
     shape = str(shape or 'auto').lower()
-    if shape not in ('auto', 'circle', 'polygon'):
-        raise ValueError("shape must be 'auto', 'circle' or 'polygon'")
+    if shape not in ('auto', 'circle', 'polygon', 'irregular'):
+        raise ValueError("shape must be 'auto', 'circle', 'polygon' or 'irregular'")
 
-    hough = _hough_circle(probe) if shape in ('auto', 'circle') else None
     contour = None
-    if hough is None:
-        cx, cy, r, contour = _contour_circle(probe, threshold)
-        method = 'contour_circle' if shape != 'polygon' else 'contour_polygon'
-    else:
-        cx, cy, r, _ = hough
-        method = 'hough_circle'
-
-    # For auto, a circle is accepted only when it covers most of the foreground.
-    # A hex/rectangular cell would leave large corners outside a fitted circle.
-    if shape == 'auto' and method == 'hough_circle':
-        level, fg = _foreground_mask(probe, threshold)
-        fg_area = float((fg > 0).sum())
-        circle_area = math.pi * max(r, 1.0) ** 2
-        if fg_area > 0 and circle_area / fg_area < 0.80:
-            cx, cy, r, contour = _contour_circle(probe, threshold)
-            method = 'contour_polygon'
-            shape = 'polygon'
-        else:
-            shape = 'circle'
-    elif shape == 'auto':
-        shape = 'circle' if method == 'contour_circle' else 'polygon'
-
-    threshold_used = float(threshold) if threshold is not None else None
-    if method in ('contour_circle', 'contour_polygon'):
-        threshold_used, _ = _otsu(probe, threshold)
-
+    polygon = None
+    threshold_used = None
     outer_radius = None
     ring_detected = False
     ring_info = {}
-    if shape == 'circle':
+    frozen = []
+    radius = None
+    center = None
+    hull = None
+    info_shape = None
+
+    if shape in ('polygon', 'irregular'):
+        polygon, threshold_used = _contour_polygon(probe, threshold)
+        if shape == 'polygon':
+            polygon = _hull(polygon).reshape(-1, 2)
+        method = 'contour_irregular' if shape == 'irregular' else 'contour_polygon'
+        info_shape = 'irregular' if shape == 'irregular' else 'polygon'
+    else:
+        hough = _hough_circle(probe) if shape in ('auto', 'circle') else None
+        if hough is None and shape == 'circle':
+            cx, cy, r, contour = _contour_circle(probe, threshold)
+            method = 'contour_circle'
+        elif hough is None:
+            polygon, threshold_used = _contour_polygon(probe, threshold)
+            method = 'contour_irregular'
+            info_shape = 'irregular'
+        else:
+            cx, cy, r, _ = hough
+            method = 'hough_circle'
+
+        if shape == 'auto' and method == 'hough_circle':
+            # A circle is accepted only when it covers most of the foreground.
+            # An L-shaped, keyhole, hex or rectangular cell would leave large
+            # corners outside a fitted circle; use the concave contour instead.
+            level, fg = _foreground_mask(probe, threshold)
+            fg_area = float((fg > 0).sum())
+            circle_area = math.pi * max(r, 1.0) ** 2
+            if fg_area > 0 and circle_area / fg_area < 0.80:
+                polygon, threshold_used = _contour_polygon(probe, threshold)
+                method = 'contour_irregular'
+                info_shape = 'irregular'
+            else:
+                info_shape = 'circle'
+        elif shape == 'auto':
+            if method == 'contour_circle':
+                info_shape = 'circle'
+            else:
+                info_shape = 'irregular'
+        elif shape == 'circle':
+            info_shape = 'circle'
+
+    if info_shape == 'circle':
         outer_radius = float(r)
         ring_radius, ring_detected, ring_info = _static_ring_inner_radius(
             std, (cx, cy), outer_radius)
         boundary_radius = ring_radius if ring_detected else outer_radius
         radius = max(1.0, boundary_radius - float(margin_px))
         mask = _circle_mask((h, w), cx, cy, radius, 0.0)
-        info_shape = 'circle'
         center = [float(cx), float(cy)]
-        hull = None
         if ring_detected:
             method += '+static_ring'
+            frozen = _frozen_disks(
+                mean, std, center=(cx, cy), base_radius=radius,
+                outer_radius=outer_radius,
+                particle_radius_px=particle_radius_px,
+                active_std=ring_info.get('active_std'))
+            if frozen:
+                bite_radius = float(particle_radius_px)
+                for disc in frozen:
+                    cv2.circle(
+                        mask,
+                        (int(round(disc['center_px'][0])),
+                         int(round(disc['center_px'][1]))),
+                        int(round(bite_radius + 1.0)), 0, -1)
+                method += '+frozen_disks'
     else:
-        if contour is None:
-            _, contour = _contour_circle(probe, threshold)
-        hull = _hull(contour)
-        mask = _polygon_mask((h, w), hull, float(margin_px))
-        info_shape = 'polygon'
-        center = [float(cx), float(cy)]
-        radius = None
-        ring_info = {}
+        if polygon is None:
+            polygon, threshold_used = _contour_polygon(probe, threshold)
+            if info_shape == 'polygon':
+                polygon = _hull(polygon).reshape(-1, 2)
+        polygon = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
+        if len(polygon) < 3:
+            raise ValueError('irregular boundary needs at least three points')
+        mask = _polygon_mask((h, w), polygon, float(margin_px))
+        hull = polygon.reshape(-1, 1, 2)
+        # Mean of the boundary points; the polygon is already in image
+        # coordinates and this is only a display/metadata centre.
+        center = [float(polygon[:, 0].mean()), float(polygon[:, 1].mean())]
+        info_shape = info_shape or 'irregular'
 
     preview_idx = indices[len(indices) // 2] if preview_frame is None else int(preview_frame)
     preview_idx = max(0, min(len(files) - 1, preview_idx))
     preview = X.read_image(files[preview_idx], levels)
     overlay = _overlay(preview, mask, shape=info_shape, center=center,
                        radius=radius, outer_radius=outer_radius,
-                       ring_detected=ring_detected, hull=hull)
+                       ring_detected=ring_detected, frozen_disks=frozen, hull=hull)
     info = {
         'schema': SCHEMA,
         'status': 'proposed',
@@ -334,6 +532,10 @@ def propose(files, *, levels=(128.0, 28224.0), n_frames=DEFAULT_FRAMES,
         'radius_px': radius,
         'outer_radius_px': outer_radius,
         'ring_detected': bool(ring_detected),
+        'particle_radius_px': (float(particle_radius_px)
+                               if particle_radius_px is not None else None),
+        'frozen_disc_count': int(len(frozen)),
+        'frozen_discs': frozen,
         'margin_px': float(margin_px),
         'threshold': threshold_used,
         **ring_info,
@@ -347,9 +549,59 @@ def propose(files, *, levels=(128.0, 28224.0), n_frames=DEFAULT_FRAMES,
     return mask, info, overlay
 
 
+def propose_manual(files, points, holes=None, *, levels=(128.0, 28224.0),
+                    preview_frame=None, margin_px=0.0):
+    """Build a mask from a human-drawn polygon; no automatic boundary fit."""
+    if not files:
+        raise ValueError('no frames supplied')
+    holes = list(holes or [])
+    first = X.read_image(files[0], levels)
+    h, w = first.shape
+    points = np.asarray(points, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 2 or len(points) < 3:
+        raise ValueError('manual polygon needs at least three [x, y] points')
+    if points[:, 0].min() < 0 or points[:, 0].max() >= w or points[:, 1].min() < 0 or points[:, 1].max() >= h:
+        raise ValueError('manual points fall outside the frame')
+    for hole in holes:
+        hole = np.asarray(hole, dtype=np.float64)
+        if hole.ndim != 2 or hole.shape[1] != 2 or len(hole) < 3:
+            raise ValueError('each manual hole needs at least three points')
+        if hole[:, 0].min() < 0 or hole[:, 0].max() >= w or hole[:, 1].min() < 0 or hole[:, 1].max() >= h:
+            raise ValueError('manual hole points fall outside the frame')
+    mask = _manual_mask((h, w), points, holes, float(margin_px))
+    preview_idx = len(files) // 2 if preview_frame is None else int(preview_frame)
+    preview_idx = max(0, min(len(files) - 1, preview_idx))
+    preview = X.read_image(files[preview_idx], levels)
+    # Reuse the same green confirmation style as the automatic proposals.
+    overlay = _overlay(preview, mask, shape='irregular', hull=points.reshape(-1, 1, 2),
+                       label='manual mask')
+    info = {
+        'schema': SCHEMA,
+        'status': 'manual',
+        'created_at': schema.now_iso(),
+        'method': 'manual_polygon',
+        'shape': 'irregular',
+        'center_px': [float(points[:, 0].mean()), float(points[:, 1].mean())],
+        'radius_px': None,
+        'outer_radius_px': None,
+        'ring_detected': False,
+        'margin_px': float(margin_px),
+        'threshold': None,
+        'image_shape': [int(h), int(w)],
+        'frame_count': int(len(files)),
+        'sample_indices': [],
+        'preview_index': int(preview_idx),
+        'mask_coverage': float((mask > 0).mean()),
+        'points_px': points.tolist(),
+        'holes_px': [np.asarray(h, dtype=np.float64).tolist() for h in holes],
+        'notes': 'manually drawn mask; inspect mask_overlay.png before using interior_mask.png',
+    }
+    return mask, info, overlay
+
+
 def propose_from_raw(raw, out, config, *, n_frames=DEFAULT_FRAMES, shape='auto',
                      margin_px=DEFAULT_MARGIN_PX, threshold=None,
-                     preview_frame=None, force=False):
+                     preview_frame=None, force=False, points=None):
     """Create ``interior_mask.png``, ``mask_overlay.png`` and ``mask.json``."""
     raw = Path(raw).expanduser().resolve()
     if not raw.is_dir():
@@ -368,9 +620,17 @@ def propose_from_raw(raw, out, config, *, n_frames=DEFAULT_FRAMES, shape='auto',
     files = X.files_for({'path': str(raw), 'extensions': tuple(config.extensions)})
     if not files:
         raise FileNotFoundError('no frames found in %s' % raw)
-    mask, info, overlay = propose(
-        files, levels=config.scale_levels, n_frames=n_frames, shape=shape,
-        margin_px=margin_px, threshold=threshold, preview_frame=preview_frame)
+    if points is not None:
+        manual_points, manual_holes = load_points(points)
+        mask, info, overlay = propose_manual(
+            files, manual_points, manual_holes, levels=config.scale_levels,
+            preview_frame=preview_frame, margin_px=margin_px)
+        info['points_file'] = str(Path(points).expanduser().resolve())
+    else:
+        mask, info, overlay = propose(
+            files, levels=config.scale_levels, n_frames=n_frames, shape=shape,
+            margin_px=margin_px, threshold=threshold, preview_frame=preview_frame,
+            particle_radius_px=config.radius_px)
     Image.fromarray(mask).save(mask_path)
     Image.fromarray(overlay).save(overlay_path)
     info.update({

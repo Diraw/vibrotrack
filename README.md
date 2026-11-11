@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.2.1"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.3.0"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -86,7 +86,8 @@ masks/case01/mask.json           方法、中心/半径、参数、哈希、stat
 先看 `mask_overlay.png`：绿色区域是否完整覆盖容器内部、是否把边界外区域也包进来。
 确认后再把 `interior_mask.png` 传给 `extract --mask`。自动检测不是最终裁决，
 `mask.json` 里的 `status` 保持 `proposed`，直到人工确认。圆形容器默认走 Hough，
-六角/矩形可以改用 `--shape polygon`。旧 mask 仍然可以用，自动生成不是强制的。
+六角/矩形可以改用 `--shape polygon`，非凸容器用 `--shape irregular`。
+旧 mask 仍然可以用，自动生成不是强制的。
 详见 [`docs/MASK.md`](docs/MASK.md)。
 
 ### 3. 提取一个 case
@@ -205,6 +206,8 @@ mask/overlay 的 sha256。字段见 [`docs/MASK.md`](docs/MASK.md)。
 
 ## 边界 mask 怎么做
 
+完整说明（不规则边界、网页手画、points JSON）见 [`docs/MANUAL_MASK.md`](docs/MANUAL_MASK.md)。
+
 优先让工具生成提议，再人工看 overlay 确认：
 
 ```bash
@@ -215,7 +218,8 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 
 - 白（>0）= 检测区域，黑 = 不检测。
 - 圆形容器：默认 `--shape auto` 走 Hough 圆；`--margin-px 2` 表示从检测到的边界向**内**收 2 px；负值才向外扩。
-- 六角/矩形：`--shape polygon`，用前景外轮廓的凸包。
+- 六角/矩形：`--shape polygon`，用前景外轮廓的凸包；非凸容器用 `--shape irregular`。
+- 手动画：先 `vibrotrack frame ... --out preview.png` 导出一帧，再打开 `tools/mask_editor.html`，沿内侧点边界，导出 mask 或 points JSON。
 - **冻结颗粒 + 圆环**：工具用时间维 std 找外圈静态区；overlay 里绿色 mask 停在冻结环内侧，橙色圈标出外圈。
   这种数据提取时建议加 `--wall-band 0 --wall-model off`，不要把冻结环当可动颗粒搜进来。
 - `mask.json` 的 `status` 是 `proposed`；overlay 里绿色区域盖住活动区、没有大片漏检，才算确认。
@@ -227,7 +231,7 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
 CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.2.1）
+## 已知限制（v0.3.0）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。
@@ -239,6 +243,9 @@ CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 worke
   确认是流程的一部分，不是可选项。
 - 冻结环检测基于“活动区 temporal std 高、冻结区 std 低”。如果冻结环也在缓慢蠕动，
   或活动区本身几乎不动，std 对比会变弱；这时看 `ring_detected`，必要时手工画 mask。
+- `irregular` 拟合的是**前景外轮廓**，适合非圆容器；它不能自动识别“圆环 + 离散冻结
+  颗粒”的内侧包络。后者用 CAD 配准或网页编辑器手画。
+- `polygon` 仍是凸包，非凸边界请用 `irregular`。
 - 没有 GUI；批处理请用 CLI 或 Python API。
 
 ## 开发与测试

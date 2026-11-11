@@ -72,6 +72,12 @@ def test_mask_command_writes_proposal_and_overlay(tmp_path):
     for x, y in pts:
         assert mask[int(round(y)), int(round(x))], (x, y)
 
+    # one-frame export is the input for the manual mask editor
+    preview = tmp_path / 'preview.png'
+    assert cli.main(['frame', '--raw', str(frames), '--config', str(cfg_path),
+                     '--index', '2', '--out', str(preview)]) == 0
+    assert Image.open(preview).size == (800, 800)
+
     # The polygon branch must at least produce a usable filled mask as well.
     out_poly = tmp_path / 'mask_poly'
     assert cli.main(['mask', '--raw', str(frames), '--out', str(out_poly),
@@ -140,3 +146,81 @@ def test_mask_excludes_static_frozen_ring(tmp_path):
         assert not mask[int(round(y)), int(round(x))], (x, y)
     for x, y in active:
         assert mask[int(round(y)), int(round(x))], (x, y)
+
+
+def _make_irregular_case(tmp_path):
+    frames = tmp_path / 'irregular_frames'
+    frames.mkdir()
+    size = 600
+    poly = np.array([[90, 90], [420, 90], [420, 260], [250, 260],
+                     [250, 480], [90, 480]], np.int32)
+    for i in range(5):
+        im = np.full((size, size), 12, np.uint8)
+        cv2.fillPoly(im, [poly], 200)
+        # moving dark markers make the region look like a particle bed
+        for k in range(20):
+            t = 0.02 * i + 2 * np.pi * k / 20
+            x = 255 + 120 * np.cos(t)
+            y = 285 + 120 * np.sin(t)
+            cv2.circle(im, (int(x), int(y)), 14, 80, -1)
+        Image.fromarray(im).save(frames / f'frame_{i:04d}.tiff')
+    cfg = {
+        'apparatus': 'synthetic-l',
+        'fps': 10.0,
+        'px_per_mm': 5.0,
+        'particle': {'diameter_mm': 7.0, 'nominal_n': 20},
+        'image': {'width': size, 'height': size, 'dtype': 'uint8'},
+        'boundary': {},
+        'detector': {'name': 'v2'},
+        'linker': {'name': 'v2', 'max_gap': 5},
+        'run': {'workers': 1, 'shard': 100},
+    }
+    cfg_path = tmp_path / 'irregular_apparatus.yaml'
+    cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding='utf-8')
+    return frames, cfg_path, poly
+
+
+def test_irregular_mask_keeps_concave_corner_out(tmp_path):
+    frames, cfg_path, poly = _make_irregular_case(tmp_path)
+    out = tmp_path / 'irregular_mask'
+    assert cli.main(['mask', '--raw', str(frames), '--out', str(out),
+                     '--config', str(cfg_path), '--frames', '5',
+                     '--shape', 'irregular']) == 0
+    rec = json.loads((out / 'mask.json').read_text(encoding='utf-8'))
+    assert rec['shape'] == 'irregular'
+    assert rec['method'] == 'contour_irregular'
+    mask = np.asarray(Image.open(out / 'interior_mask.png')) > 0
+    # inside the L and inside the missing corner
+    assert mask[180, 150]
+    assert mask[420, 150]
+    assert not mask[420, 380]
+
+
+def test_manual_polygon_mask(tmp_path):
+    frames, cfg_path, _ = _make_irregular_case(tmp_path)
+    pts = tmp_path / 'points.json'
+    pts.write_text(json.dumps({'points_px': [[100, 100], [400, 100],
+                                             [400, 400], [100, 400]]}),
+                   encoding='utf-8')
+    out = tmp_path / 'manual_mask'
+    assert cli.main(['mask', '--raw', str(frames), '--out', str(out),
+                     '--config', str(cfg_path), '--points', str(pts)]) == 0
+    rec = json.loads((out / 'mask.json').read_text(encoding='utf-8'))
+    assert rec['status'] == 'manual'
+    assert rec['method'] == 'manual_polygon'
+    mask = np.asarray(Image.open(out / 'interior_mask.png')) > 0
+    assert mask[200, 200]
+    assert not mask[500, 500]
+    # optional holes are subtracted from a manual polygon
+    pts.write_text(json.dumps({'points_px': [[100, 100], [400, 100],
+                                             [400, 400], [100, 400]],
+                               'holes_px': [[[180, 180], [260, 180],
+                                             [260, 260], [180, 260]]]}),
+                   encoding='utf-8')
+    out_hole = tmp_path / 'manual_hole'
+    assert cli.main(['mask', '--raw', str(frames), '--out', str(out_hole),
+                     '--config', str(cfg_path), '--points', str(pts),
+                     '--margin-px', '0']) == 0
+    mask_hole = np.asarray(Image.open(out_hole / 'interior_mask.png')) > 0
+    assert not mask_hole[220, 220]
+    assert mask_hole[300, 300]

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 — 2026-11-11
+
+- Added `--shape irregular`: a non-convex contour fit for non-circular cells; `auto`
+  now falls back to it when a Hough circle covers less than 80% of the foreground.
+- Added manual masks: `mask --points boundary_points.json` writes a `status=manual`
+  proposal with the same overlay/JSON contract; optional `holes_px` are supported.
+- Added `tools/mask_editor.html`, a local no-upload polygon editor that exports
+  `interior_mask.png` or `boundary_points.json`.
+- Added `vibrotrack frame` for exporting one normalized PNG/JPEG frame for the editor.
+- Kept `--shape polygon` as the convex-hull behavior for rectangular/hexagonal cells.
+- Frozen boundary discs are detected from the temporal mean and subtracted as circular
+  bites when a static ring is present.
+
 ## 0.2.1 — 2026-11-11
 
 - Boundary proposal now detects a low-temporal-std frozen-particle/static ring: the

@@ -12,10 +12,13 @@ accept   -> acceptance.json
 
 ## `mask.json` — boundary proposal
 
-`vibrotrack mask` writes `schema: mask-proposal/v1` with `status: proposed`, the
-proposal method, `center_px`/`radius_px`/`outer_radius_px`, `ring_detected`, sampled frame indices, and sha256 of the
-mask and overlay. It is not part of `dataset.json` until the mask is explicitly
-passed to `extract --mask`. See [`MASK.md`](MASK.md).
+`vibrotrack mask` writes `schema: mask-proposal/v1`. Automatic proposals use
+`status: proposed` and a `method` such as `hough_circle`, `contour_irregular` or
+`contour_polygon`; human polygons use `status: manual` and `method: manual_polygon`.
+Fields include `shape`, `center_px`/`radius_px`/`outer_radius_px`, `ring_detected`,
+`frozen_discs`, sampled frame indices, and sha256 of the mask and overlay. It is not
+part of `dataset.json` until the mask is explicitly passed to `extract --mask`.
+See [`MASK.md`](MASK.md) and [`MANUAL_MASK.md`](MANUAL_MASK.md).
 
 ## `dataset.json` — one case
 
@@ -38,7 +41,7 @@ passed to `extract --mask`. See [`MASK.md`](MASK.md).
   "conditions": {"frequency_hz": 140.0, "acceleration_g": 2.0},
   "calibration": {"px_per_mm": 5.1558, "source": "cad_affine_assumed", "uncertainty_px_per_mm": null},
   "boundary": {"mode": "mask", "mask": "...", "mask_sha256": "...", "wall_model": "empirical", "wall_band": 1},
-  "code": {"name": "vibrotrack", "version": "0.2.1", "commit": "...", "dirty": false},
+  "code": {"name": "vibrotrack", "version": "0.3.0", "commit": "...", "dirty": false},
   "outputs": [{"file": "chunk_00000_17999.npz", "bytes": 314582971, "sha256": "..."}],
   "qc": {"status": "extracted"},
   "retention": {"raw_path": "<raw volume>/...", "raw_deleted": false},

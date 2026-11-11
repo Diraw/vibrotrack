@@ -58,7 +58,7 @@ vibrotrack mask ... --shape polygon --margin-px 4 --force
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `--frames` | 12 | 从整段录像均匀抽多少帧做 temporal max |
-| `--shape` | auto | `auto` / `circle` / `polygon` |
+| `--shape` | auto | `auto` / `circle` / `polygon` / `irregular` |
 | `--margin-px` | 2 | 从检测到的边界向**内**收的像素；负值向外扩 |
 | `--threshold` | Otsu | 前景阈值；光照特殊时手动指定 |
 | `--preview-frame` | 中间采样帧 | overlay 使用哪一帧原图 |
@@ -71,12 +71,13 @@ vibrotrack mask ... --shape polygon --margin-px 4 --force
 2. 对 temporal max 做高斯模糊和 Otsu 阈值，得到前景。
 3. 圆形容器优先用 Hough 圆；候选必须靠近画面中心，半径在画面尺寸的合理范围内。
    取不到圆时，回到前景最大连通域的外轮廓，用最小外接圆。
-4. 对采样帧计算时间维 std；活动区 std 高、冻结颗粒/圆环 std 低。从外圈向内扫描
+4. 非圆/不规则容器：`--shape irregular` 使用前景最大连通域的非凸轮廓，不做凸包；
+   圆覆盖前景不足 80% 时 `auto` 也会走这个分支。详见 `docs/MANUAL_MASK.md`。
+5. 对采样帧计算时间维 std；活动区 std 高、冻结颗粒/圆环 std 低。从外圈向内扫描
    std 径向剖面，找到活动区结束的内侧半径。若存在静态环，mask 半径停在这个内边界
    再向内收 `--margin-px`；否则用外圈半径。
-5. `--shape polygon` 或 Hough 圆覆盖不了前景大部分面积时，用外轮廓凸包，适合六角/
-   矩形 ROI。
-6. 用采样帧生成 overlay；绿色为最终 mask，橙色为检测到的外圈/冻结环。mask 和
+6. `--shape polygon` 保留凸包行为，适合矩形/六角等凸形 ROI；非凸容器用 `irregular`。
+7. 用采样帧生成 overlay；绿色为最终 mask，橙色为检测到的外圈/冻结环。mask 和
    overlay 一起写盘。
 
 ## `mask.json`
@@ -86,9 +87,9 @@ vibrotrack mask ... --shape polygon --margin-px 4 --force
 | 字段 | 含义 |
 |---|---|
 | `schema` | `mask-proposal/v1` |
-| `status` | 固定为 `proposed`；人工确认是流程动作，不是文件自动改写 |
-| `method` | `hough_circle` / `hough_circle+static_ring` / `contour_circle` / `contour_polygon` |
-| `shape` | `circle` / `polygon` |
+| `status` | 自动提议为 `proposed`；手动画的为 `manual`；人工确认是流程动作 |
+| `method` | `hough_circle` / `hough_circle+static_ring` / `contour_irregular` / `contour_polygon` / `manual_polygon` |
+| `shape` | `circle` / `polygon` / `irregular` |
 | `center_px` | 估计中心，`[x, y]` |
 | `radius_px` | 圆形 mask 半径（已按 margin 向内收）；多边形为 `null` |
 | `outer_radius_px` | Hough/轮廓检测到的外圈半径；无圆时为 `null` |
@@ -102,6 +103,7 @@ vibrotrack mask ... --shape polygon --margin-px 4 --force
 | `sample_indices` | 实际抽到的帧号 |
 | `preview_index` | overlay 用的帧号 |
 | `mask_coverage` | mask 占全图比例，仅作 sanity check |
+| `points_px` / `holes_px` | 手动 mask 的原始多边形（仅 manual） |
 | `mask_sha256` / `overlay_sha256` | 产物哈希 |
 | `raw` | 只写来源目录，不复制原始帧 |
 
@@ -109,6 +111,7 @@ vibrotrack mask ... --shape polygon --margin-px 4 --force
 
 - 容器必须大致居中；Hough 候选被限制在画面中心附近。
 - 假设容器内部整体比外部亮。严重不均匀照明、强反光、容器贴边时可能失败。
-- 非凸边界不能用凸包表示；这种情况应手工画 mask。
+- `polygon` 是凸包，非凸边界必须用 `irregular` 或手工画 mask。`irregular` 拟合的是
+  前景外轮廓，不是冻结颗粒的内侧包络。
 - 自动提议不会判断“哪颗是活性颗粒”，只给检测区域。
 - 自动提议不会改变 `px_per_mm` 或 `N`；标定和装载量仍由用户提供。

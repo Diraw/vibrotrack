@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vibrotrack 手动边界 mask</title>
+<style>
+  :root { color-scheme: light dark; --line:#19a35b; --bg:#101418; --panel:#182027; --text:#e8eef3; --muted:#93a4b2; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:18px; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, "Microsoft YaHei", sans-serif; }
+  h1 { font-size:18px; margin:0 0 6px; }
+  p { margin:4px 0 12px; color:var(--muted); }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; }
+  button, label.file { border:1px solid #40505c; background:var(--panel); color:var(--text); padding:7px 11px; border-radius:7px; cursor:pointer; }
+  button:hover, label.file:hover { border-color:var(--line); }
+  button:disabled { opacity:.4; cursor:default; }
+  #stage { position:relative; max-width:100%; overflow:auto; border:1px solid #31404b; border-radius:8px; background:#070a0c; }
+  canvas { display:block; max-width:100%; height:auto; touch-action:none; }
+  #status { color:var(--muted); margin-left:auto; }
+  code { color:#9ee7bd; }
+  .hint { border-left:3px solid var(--line); padding-left:10px; }
+</style>
+</head>
+<body>
+<h1>vibrotrack 手动边界 mask</h1>
+<p class="hint">载入一帧原图，沿容器/冻结颗粒的<strong>内侧</strong>依次点击边界点；闭合后导出
+<code>interior_mask.png</code> 或 <code>boundary_points.json</code>。导出的 mask 与原图同尺寸。</p>
+
+<div class="bar">
+  <label class="file">载入图像<input id="file" type="file" accept="image/*" hidden></label>
+  <button id="undo" disabled>撤销点</button>
+  <button id="close" disabled>闭合并预览</button>
+  <button id="clear" disabled>清空</button>
+  <button id="saveMask" disabled>导出 interior_mask.png</button>
+  <button id="saveJson" disabled>导出 boundary_points.json</button>
+  <span id="status">等待图像</span>
+</div>
+
+<div id="stage"><canvas id="canvas" width="900" height="600"></canvas></div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const status = document.getElementById('status');
+  const fileInput = document.getElementById('file');
+  const btnUndo = document.getElementById('undo');
+  const btnClose = document.getElementById('close');
+  const btnClear = document.getElementById('clear');
+  const btnMask = document.getElementById('saveMask');
+  const btnJson = document.getElementById('saveJson');
+
+  let image = null;
+  let filename = 'frame';
+  let points = [];
+  let closed = false;
+  let dragIndex = -1;
+
+  function setStatus(text) { status.textContent = text; }
+
+  function render() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (image) ctx.drawImage(image, 0, 0, w, h);
+    if (points.length) {
+      ctx.beginPath();
+      ctx.moveTo(points[0][0], points[0][1]);
+      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+      if (closed) ctx.closePath();
+      if (closed) {
+        ctx.fillStyle = 'rgba(30, 200, 120, 0.28)';
+        ctx.fill();
+      }
+      ctx.strokeStyle = '#21e884';
+      ctx.lineWidth = Math.max(3, Math.round(Math.max(w, h) / 600));
+      ctx.stroke();
+      for (let i = 0; i < points.length; i++) {
+        ctx.beginPath();
+        ctx.arc(points[i][0], points[i][1], Math.max(5, Math.round(Math.max(w, h) / 300)), 0, Math.PI * 2);
+        ctx.fillStyle = i === 0 ? '#ffd166' : '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = '#102018';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+    btnUndo.disabled = !points.length;
+    btnClose.disabled = points.length < 3 || closed;
+    btnClear.disabled = !points.length;
+    btnMask.disabled = !(closed || points.length >= 3);
+    btnJson.disabled = points.length < 3;
+    setStatus(image ? `${filename}  ${w}×${h}  ${points.length} 个点${closed ? '（已闭合）' : ''}` : '等待图像');
+  }
+
+  function resizeCanvas() {
+    if (!image) return;
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    render();
+  }
+
+  function localPoint(ev) {
+    const r = canvas.getBoundingClientRect();
+    const x = (ev.clientX - r.left) * canvas.width / r.width;
+    const y = (ev.clientY - r.top) * canvas.height / r.height;
+    return [Math.max(0, Math.min(canvas.width - 1, x)),
+            Math.max(0, Math.min(canvas.height - 1, y))];
+  }
+
+  fileInput.addEventListener('change', () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    filename = f.name;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const im = new Image();
+      im.onload = () => {
+        image = im;
+        points = [];
+        closed = false;
+        resizeCanvas();
+      };
+      im.src = reader.result;
+    };
+    reader.readAsDataURL(f);
+  });
+
+  canvas.addEventListener('pointerdown', (ev) => {
+    if (!image) return;
+    const p = localPoint(ev);
+    if (closed) {
+      // allow dragging a vertex after closure
+      const hit = points.findIndex(q => Math.hypot(q[0] - p[0], q[1] - p[1]) <= Math.max(12, canvas.width / 160));
+      if (hit >= 0) { dragIndex = hit; canvas.setPointerCapture(ev.pointerId); }
+      return;
+    }
+    const hit = points.findIndex(q => Math.hypot(q[0] - p[0], q[1] - p[1]) <= Math.max(10, canvas.width / 180));
+    if (hit >= 0) { dragIndex = hit; canvas.setPointerCapture(ev.pointerId); return; }
+    points.push(p);
+    render();
+  });
+
+  canvas.addEventListener('pointermove', (ev) => {
+    if (dragIndex < 0) return;
+    points[dragIndex] = localPoint(ev);
+    render();
+  });
+  canvas.addEventListener('pointerup', (ev) => {
+    if (dragIndex >= 0) { dragIndex = -1; canvas.releasePointerCapture(ev.pointerId); }
+  });
+
+  btnUndo.addEventListener('click', () => {
+    if (closed) closed = false;
+    else points.pop();
+    render();
+  });
+  btnClose.addEventListener('click', () => {
+    if (points.length >= 3) { closed = true; render(); }
+  });
+  btnClear.addEventListener('click', () => {
+    points = []; closed = false; render();
+  });
+
+  function download(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  btnJson.addEventListener('click', () => {
+    const data = { image_shape: [canvas.height, canvas.width], points_px: points, source: filename };
+    download(new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}), 'boundary_points.json');
+  });
+
+  btnMask.addEventListener('click', () => {
+    const out = document.createElement('canvas');
+    out.width = canvas.width; out.height = canvas.height;
+    const octx = out.getContext('2d');
+    octx.fillStyle = '#000'; octx.fillRect(0, 0, out.width, out.height);
+    octx.fillStyle = '#fff';
+    octx.beginPath();
+    octx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) octx.lineTo(points[i][0], points[i][1]);
+    octx.closePath(); octx.fill();
+    out.toBlob((blob) => download(blob, 'interior_mask.png'), 'image/png');
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

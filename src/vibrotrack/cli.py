@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+
+import cv2
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from . import batch as batch_mod
 from . import boundary
+from . import detect as X
 from . import geometry as G
 from . import pipeline
 from . import schema
@@ -83,8 +87,12 @@ def _cmd_mask(args):
     info, mask_path, overlay_path, json_path = boundary.propose_from_raw(
         args.raw, args.out, cfg, n_frames=args.frames, shape=args.shape,
         margin_px=args.margin_px, threshold=args.threshold,
-        preview_frame=args.preview_frame, force=args.force)
+        preview_frame=args.preview_frame, force=args.force,
+        points=args.points)
     print('proposed: %s' % info['shape'])
+    if info.get('method') == 'manual_polygon':
+        print('manual:   %d boundary points, %d hole(s)'
+              % (len(info.get('points_px', [])), len(info.get('holes_px', []))))
     if info.get('radius_px') is not None:
         print('center:   [%.2f, %.2f]' % tuple(info['center_px']))
         print('radius:   %.2f px (after %.2f px inward margin)'
@@ -92,10 +100,37 @@ def _cmd_mask(args):
         if info.get('ring_detected'):
             print('ring:     static/frozen ring detected; outer r=%.2f px, mask stops inside'
                   % info['outer_radius_px'])
+        if info.get('frozen_disc_count'):
+            print('frozen:   %d individual frozen disc(s) subtracted from the mask'
+                  % info['frozen_disc_count'])
     print('mask:     %s' % mask_path)
     print('overlay:  %s' % overlay_path)
     print('meta:     %s' % json_path)
     print('inspect the overlay; if it covers the cell, use --mask %s' % mask_path)
+    return 0
+
+
+def _cmd_frame(args):
+    """Export one normalized frame as PNG/JPEG for the manual mask editor."""
+    cfg = load_config(args.config, base_dir=args.base_dir)
+    files = X.files_for({'path': str(Path(args.raw).expanduser()),
+                         'extensions': tuple(cfg.extensions)})
+    if not files:
+        raise FileNotFoundError('no frames found in %s' % args.raw)
+    index = int(args.index)
+    if index < 0:
+        index += len(files)
+    if index < 0 or index >= len(files):
+        raise IndexError('frame index %s outside 0..%d' % (args.index, len(files) - 1))
+    img = X.read_image(files[index], cfg.scale_levels)
+    if args.max_size and max(img.shape) > args.max_size:
+        scale = float(args.max_size) / max(img.shape)
+        img = cv2.resize(img, None, fx=scale, fy=scale,
+                         interpolation=cv2.INTER_AREA)
+    out = Path(args.out).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(img).save(out)
+    print('frame:   %s  (%dx%d) -> %s' % (files[index].name, img.shape[1], img.shape[0], out))
     return 0
 
 
@@ -209,12 +244,24 @@ def build_parser():
     p.add_argument('--config', required=True, help='apparatus YAML (image/extensions/scale levels)')
     p.add_argument('--base-dir', default=None)
     p.add_argument('--frames', type=int, default=12, help='number of frames sampled across the recording')
-    p.add_argument('--shape', choices=['auto', 'circle', 'polygon'], default='auto')
+    p.add_argument('--shape', choices=['auto', 'circle', 'polygon', 'irregular'],
+                   default='auto')
+    p.add_argument('--points', default=None,
+                   help='manual polygon JSON; bypasses automatic boundary fitting')
     p.add_argument('--margin-px', type=float, default=2.0)
     p.add_argument('--threshold', type=float, default=None, help='foreground threshold; default: Otsu')
     p.add_argument('--preview-frame', type=int, default=None, help='frame index used for the overlay')
     p.add_argument('--force', action='store_true', help='overwrite an existing proposal')
     p.set_defaults(func=_cmd_mask)
+
+    p = sub.add_parser('frame', help='export one frame as PNG/JPEG for manual mask drawing')
+    p.add_argument('--raw', required=True, help='directory of TIFF frames')
+    p.add_argument('--config', required=True, help='apparatus YAML')
+    p.add_argument('--base-dir', default=None)
+    p.add_argument('--index', type=int, default=0, help='frame index; negative counts from the end')
+    p.add_argument('--max-size', type=int, default=0, help='max output side in px; 0 = original (use original when exporting a mask)')
+    p.add_argument('--out', required=True, help='output PNG/JPEG')
+    p.set_defaults(func=_cmd_frame)
 
     p = sub.add_parser('geometry', help='write geometry.json for a tracked case')
     p.add_argument('--case-dir', required=True)
