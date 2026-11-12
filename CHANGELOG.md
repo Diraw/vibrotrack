@@ -2,6 +2,12 @@
 
 ## 0.10.0 — 2026-11-12
 
+- `geometry` computes `phi` from per-detection radius classes when the chunk
+  carries more than one radius: `sum(n_i * r_i^2) / R^2`, with `radius_classes`
+  and `phi_method` recorded. A single-radius `phi` overcounts the large discs in
+  a mixed bed. On the 306-frame 12/14 mm recording: classes 31.65 px / 481 and
+  36.74 px / 359, phi 0.810 (the single-radius figure was 0.924).
+
 - Each template can carry its own threshold (`small_template_thresh`). On the
   labelled 12/14 mm frame, lowering the 12 mm threshold from 0.20 to 0.10 only
   adds 2 of 487 small discs: the remaining misses have no peak under either

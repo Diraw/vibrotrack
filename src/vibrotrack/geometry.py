@@ -96,7 +96,7 @@ def build(case_id, xy_px, centre_seed_px, *, mask_path=None, px_per_mm=None, fps
           n_particles=None, n_detected_median=None, radius_mm=None, source='experiment',
           container_radius_mm=None, px_per_mm_source='unspecified',
           centre_shift_px=None, centre_method=None,
-          container_radius_source=None):
+          container_radius_source=None, radius_classes=None):
     if px_per_mm is None or radius_mm is None or fps is None:
         raise ValueError('px_per_mm, radius_mm and fps are required; read them from the apparatus config')
     if centre_shift_px is not None:
@@ -111,7 +111,11 @@ def build(case_id, xy_px, centre_seed_px, *, mask_path=None, px_per_mm=None, fps
                    'inherited': False, 'gate_passed': bool(resid_rms <= 30.0)}
     centre = [centre_seed_px[0] + dx, centre_seed_px[1] + dy]
     # ``envelope_r`` is where particle CENTRES reach, so the wall is one particle radius out.
-    r_p_px = radius_mm * px_per_mm
+    if radius_classes:
+        # a bidisperse bed: the wall is one LARGEST particle radius beyond the envelope
+        r_p_px = max(float(r) for r, _n in radius_classes)
+    else:
+        r_p_px = radius_mm * px_per_mm
     wall_r = envelope_r + r_p_px
     out = {
         'schema': SCHEMA,
@@ -148,11 +152,21 @@ def build(case_id, xy_px, centre_seed_px, *, mask_path=None, px_per_mm=None, fps
         out['container_radius_source'] = container_radius_source or 'image_envelope_plus_particle_radius'
     out['container_radius_m'] = r_container_m
     out['container_radius_px'] = r_container_m * 1000.0 * px_per_mm
+    if radius_classes:
+        # Occupy each class by its own area; one radius would overcount the large
+        # discs and undercount the small ones.
+        classes = [[float(r), int(n)] for r, n in radius_classes]
+        area_px = sum(n * r * r for r, n in classes)
+        out['radius_classes'] = classes
+        out['radius_classes_source'] = 'per-detection radius_px'
+        out['phi'] = float(area_px / wall_r ** 2)
+        out['phi_method'] = 'sum(n_i * r_i^2) / R_container^2 (area-weighted)'
     if n_particles is not None:
         r_m = radius_mm / 1000.0
         out['n_particles'] = int(n_particles)
-        out['phi'] = float(n_particles * r_m ** 2 / r_container_m ** 2)
-        out['phi_method'] = 'N*pi*r^2 / pi*R_container^2'
+        if not radius_classes:
+            out['phi'] = float(n_particles * r_m ** 2 / r_container_m ** 2)
+            out['phi_method'] = 'N*pi*r^2 / pi*R_container^2'
     if n_detected_median is not None:
         out['n_detected_median'] = float(n_detected_median)
     if not mask_path:

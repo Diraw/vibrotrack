@@ -13,6 +13,7 @@ from PIL import Image
 from . import batch as batch_mod
 from . import boundary
 from . import detect as X
+from . import detect2 as D2
 from . import geometry as G
 from . import pipeline
 from . import refine as refine_mod
@@ -41,16 +42,22 @@ def _seed_centre(xy, mask_path):
     return [float(np.median(xy[:, 0])), float(np.median(xy[:, 1]))]
 
 
-def _load_case_xy(case_dir):
+def _load_case_xy(case_dir, with_radius=False):
     files = sorted(Path(case_dir).glob('chunk_*.npz'))
     if not files:
         raise FileNotFoundError('no chunk_*.npz in %s' % case_dir)
-    xy, counts = [], []
+    xy, counts, radii = [], [], []
     for f in files:
         with np.load(f, allow_pickle=False) as z:
             xy.append(z['xy_px'])
             counts.append(np.diff(z['frame_offsets']))
-    return np.concatenate(xy), np.concatenate(counts)
+            if with_radius and 'radius_px' in z.files:
+                radii.append(z['radius_px'])
+    xy = np.concatenate(xy)
+    counts = np.concatenate(counts)
+    if with_radius:
+        return xy, counts, (np.concatenate(radii) if radii else None)
+    return xy, counts
 
 
 def _cmd_extract(args):
@@ -307,7 +314,16 @@ def _cmd_geometry(args):
         if value is not None:
             setattr(cfg, key, value)
     case_dir = Path(args.case_dir).resolve()
-    xy, counts = _load_case_xy(case_dir)
+    xy, counts, radii = _load_case_xy(case_dir, with_radius=True)
+    radius_classes = None
+    if radii is not None and len(radii):
+        r_all = np.asarray(radii, float)
+        classes = D2._radius_classes(r_all, None)
+        if len(classes) > 1:
+            lab = np.abs(r_all[:, None] - classes[None, :]).argmin(1)
+            n_frames = max(1, len(counts))
+            radius_classes = [[float(c), int(round((lab == k).sum() / n_frames))]
+                              for k, c in enumerate(classes)]
     mask_path = Path(args.mask).resolve() if args.mask else cfg.boundary_mask
     seed = args.seed_centre or _seed_centre(xy, mask_path)
     n_particles = args.n_particles if args.n_particles is not None else cfg.nominal_n
@@ -318,7 +334,7 @@ def _cmd_geometry(args):
         args.case_id or case_dir.name, xy, seed, mask_path=mask_path,
         px_per_mm=cfg.px_per_mm, fps=cfg.fps, radius_mm=cfg.radius_mm,
         n_particles=n_particles, n_detected_median=float(np.median(counts)),
-        px_per_mm_source=cfg.calibration_source,
+        px_per_mm_source=cfg.calibration_source, radius_classes=radius_classes,
     )
     out = Path(args.out) if args.out else case_dir / 'geometry.json'
     G.write(out, rec)
