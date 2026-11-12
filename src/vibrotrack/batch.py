@@ -96,14 +96,20 @@ def build_index(batch_dir, gate=None):
                 'centre_method': geom.get('centre_method'),
                 'envelope_resid_rms_px': (geom.get('centre_quality') or {}).get('envelope_resid_rms_px'),
                 'wall_radius_px': geom.get('wall_radius_px'),
+                'wall_radius_source': geom.get('wall_radius_source'),
                 'n_particles': geom.get('n_particles'),
                 'phi': geom.get('phi'),
+                'phi_valid': geom.get('phi_valid'),
                 'px_per_mm': geom.get('px_per_mm'),
                 'fps': geom.get('fps'),
             }
             resid = (geom.get('centre_quality') or {}).get('envelope_resid_rms_px')
             if resid is not None and resid > 30:
-                rec['geometry_warning'] = 'envelope_resid_rms_px > 30 px'
+                if geom.get('phi_valid') is False:
+                    rec['geometry_warning'] = 'envelope fit failed; phi is not usable'
+                else:
+                    rec['geometry_warning'] = ('envelope fit failed; wall radius supplied (%s)'
+                                               % geom.get('wall_radius_source'))
         else:
             rec['geometry_sha256'] = None
             rec['geometry'] = None

@@ -5,8 +5,18 @@
 - `geometry` computes `phi` from per-detection radius classes when the chunk
   carries more than one radius: `sum(n_i * r_i^2) / R^2`, with `radius_classes`
   and `phi_method` recorded. A single-radius `phi` overcounts the large discs in
-  a mixed bed. On the 306-frame 12/14 mm recording: classes 31.65 px / 481 and
-  36.74 px / 359, phi 0.810 (the single-radius figure was 0.924).
+  a mixed bed. On the 306-frame 12/14 mm recording the classes are 31.65 px / 481
+  and 36.74 px / 359.
+
+- **The wall radius on that recording is not validated by the envelope fit.**
+  `envelope_fit` kept only 19-23 of 360 angular bins (dense bed, 60.9 px residual
+  with all rows), so the first `geometry` run wrote `wall_radius_px` 1092.5 while
+  the labelled centres plus their own radii reach 1166.0 px. The 0.810 it wrote is
+  therefore too high. `geometry` now keeps the seed (mask) centre when the gate
+  fails, accepts `--wall-radius-px` / `--container-radius-mm`, records
+  `wall_radius_source` and `phi_valid`, and the batch index warns when the wall
+  radius had to be supplied. On this recording an explicit 226.3 mm wall radius
+  (1166.8 px, the labelled contact edge) gives phi **0.710**.
 
 - Each template can carry its own threshold (`small_template_thresh`). On the
   labelled 12/14 mm frame, lowering the 12 mm threshold from 0.20 to 0.10 only
@@ -19,8 +29,9 @@
   keep-the-higher-score suppression. On the 306-frame 12/14 mm recording, manual
   labels (360 large + 487/488 small per frame) give small-disc recall 38.8/42.7/
   45.1% before and 87.9/94.5/95.9% after; tracks 1193 -> 852 against 847 real
-  particles and link_fraction 0.9676 -> 0.9961. Monodisperse G0 is unchanged
-  (300 frames, every array identical) because the parameter defaults to None.
+  particles and link_fraction 0.9676 -> 0.9961 (857 tracks after the head-gap
+  pass below). Monodisperse G0 is unchanged (300 frames, every array identical)
+  because the parameter defaults to None.
 
 - Multi-radius detection for bidisperse beds. `detect2.frame` now infers one or two
   radius classes from the free-fit radii (1-D k-means, centres at least
@@ -45,11 +56,16 @@
   frames before gap finding. On the 306-frame 12/14 mm recording the radius change
   alone cuts refused attempts from 181 to 32 and leaves 0 gap rows; the length
   filter removes the fragments that pocket fits form (ml=50: 561 rows/frame,
-  889 tracks; ml=100: 455 rows/frame, 536 tracks; about 526 particles).
-- Measured limits on the 306-frame recording: the small-disc match rate rises from
-  83/173 to 150/173, but pocket fits still account for roughly a third of the
-  small-class detections, and the small discs break into about three track
-  fragments each. The class is usable with review, not yet a drop-in default.
+  889 tracks; ml=100: 455 rows/frame, 536 tracks, measured before the manual
+  labels existed, so use them as relative guidance only).
+- Measured limits on the 306-frame recording (manual labels, 6 px match): recall
+  97.9 / 98.7 / 99.2% (small 96.5 / 98.2 / 98.8, large 99.7 / 99.4 / 99.7),
+  median position error < 1 px; per-frame count 829-843 (median 840) against 847
+  labelled particles. The 857 refined tracks have median length 306 frames and
+  only 10 are shorter than 50 frames, so the earlier fragment problem is gone in
+  the refined batch. The remaining misses are dense contacts with no template
+  peak (lowering the threshold adds 2 of 487) plus a few near the wall; they are
+  not recoverable from a single frame.
 
 ## 0.9.5 — 2026-11-12
 

@@ -129,6 +129,28 @@ def test_geometry_envelope_fit_on_dense_ring():
     assert rec['phi'] > 0
 
 
+def test_wall_radius_override_and_phi_validity():
+    # A dense bed whose binned envelope is irregular: the gate must fail and phi
+    # must not be trusted unless the wall radius is supplied.
+    th = np.linspace(0, 2 * np.pi, 2000, endpoint=False)
+    rr = 350 + 60 * np.sign(np.sin(5 * th))
+    xy = np.c_[500 + rr * np.cos(th), 500 + rr * np.sin(th)]
+    rec = G.build('syn', xy, [500, 500], px_per_mm=5.0, fps=10.0,
+                  radius_mm=7.0, n_particles=500,
+                  radius_classes=[[30.0, 300], [35.0, 200]])
+    assert rec['centre_quality']['gate_passed'] is False
+    assert rec['phi_valid'] is False
+    assert rec['wall_radius_source'] == 'envelope_plus_particle_radius'
+
+    rec2 = G.build('syn', xy, [500, 500], px_per_mm=5.0, fps=10.0,
+                   radius_mm=7.0, n_particles=500,
+                   radius_classes=[[30.0, 300], [35.0, 200]],
+                   wall_radius_px=450.0)
+    assert rec2['phi_valid'] is True
+    assert rec2['wall_radius_px'] == 450.0
+    assert abs(rec2['phi'] - (300 * 30 ** 2 + 200 * 35 ** 2) / 450.0 ** 2) < 1e-9
+
+
 def test_prior_and_overlap_defaults():
     from vibrotrack import shards
     from vibrotrack.config import ApparatusConfig

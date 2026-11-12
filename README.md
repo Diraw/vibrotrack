@@ -25,6 +25,8 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 - **检测**：模板匹配 + 固定半径圆心拟合（v2），支持贴壁搜索带和冻结壁盘剔除。
 - **链接**：运动预测 + 门内匈牙利分配 + ≤N 帧补链（v2）。
 - **几何**：外缘包络圆拟合容器中心，给出壁半径、等 access 半径、`phi`。
+  稠密床的包络拟合可能失败；`centre_quality.gate_passed=false` 时壁半径不可信，
+  用 `geometry --wall-radius-px`（或 `--container-radius-mm`）显式给出。
 - **归档**：每个 case 写 `dataset.json`；每个批次写 `index.json`、`acceptance.json`；
   `verify` 重算所有哈希。`archive` 复制到只读目录并写 `FROZEN.json`。
 
@@ -331,7 +333,7 @@ HDD 上不要开 12 workers，会互相抢 I/O。
 `refine` 在全量 G0 上补 66 个缺口约 49 s；开启 `prior_dedupe` 后缺口变多（约 385 个），
 补回时间相应增加，但最终行数、轨迹数和每帧计数不变。
 
-## 已知限制（v0.9.3）
+## 已知限制（v0.10.0）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。

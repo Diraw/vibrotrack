@@ -96,7 +96,7 @@ def build(case_id, xy_px, centre_seed_px, *, mask_path=None, px_per_mm=None, fps
           n_particles=None, n_detected_median=None, radius_mm=None, source='experiment',
           container_radius_mm=None, px_per_mm_source='unspecified',
           centre_shift_px=None, centre_method=None,
-          container_radius_source=None, radius_classes=None):
+          container_radius_source=None, radius_classes=None, wall_radius_px=None):
     if px_per_mm is None or radius_mm is None or fps is None:
         raise ValueError('px_per_mm, radius_mm and fps are required; read them from the apparatus config')
     if centre_shift_px is not None:
@@ -107,8 +107,13 @@ def build(case_id, xy_px, centre_seed_px, *, mask_path=None, px_per_mm=None, fps
     else:
         dx, dy, envelope_r, n_bins, resid_rms = envelope_fit(xy_px, centre_seed_px)
         method = centre_method or 'envelope_circle_fit'
+        gate_ok = bool(resid_rms <= 30.0)
+        if not gate_ok:
+            # A ragged envelope also biases the shift; keep the seed (mask) centre.
+            dx = dy = 0.0
+            method = 'mask_centre_envelope_failed'
         quality = {'envelope_resid_rms_px': resid_rms, 'envelope_bins': n_bins,
-                   'inherited': False, 'gate_passed': bool(resid_rms <= 30.0)}
+                   'inherited': False, 'gate_passed': gate_ok}
     centre = [centre_seed_px[0] + dx, centre_seed_px[1] + dy]
     # ``envelope_r`` is where particle CENTRES reach, so the wall is one particle radius out.
     if radius_classes:
@@ -116,7 +121,20 @@ def build(case_id, xy_px, centre_seed_px, *, mask_path=None, px_per_mm=None, fps
         r_p_px = max(float(r) for r, _n in radius_classes)
     else:
         r_p_px = radius_mm * px_per_mm
-    wall_r = envelope_r + r_p_px
+    if wall_radius_px is not None:
+        wall_r = float(wall_radius_px)
+        wall_source = 'explicit'
+        wall_ok = True
+    elif container_radius_mm is not None:
+        # A supplied container radius wins over the particle envelope. Sparse beds and
+        # dense beds whose outer shell is covered both fail the envelope fit.
+        wall_r = float(container_radius_mm) * px_per_mm
+        wall_source = container_radius_source or 'supplied'
+        wall_ok = True
+    else:
+        wall_r = envelope_r + r_p_px
+        wall_source = 'envelope_plus_particle_radius'
+        wall_ok = bool(quality.get('gate_passed', quality.get('inherited', False)))
     out = {
         'schema': SCHEMA,
         'case_id': case_id,
@@ -127,6 +145,8 @@ def build(case_id, xy_px, centre_seed_px, *, mask_path=None, px_per_mm=None, fps
         'centre_method': method,
         'centre_quality': quality,
         'wall_radius_px': wall_r,
+        'wall_radius_source': wall_source,
+        'phi_valid': wall_ok,
         'envelope_radius_px': envelope_r,
         'px_per_mm': float(px_per_mm),
         'px_per_mm_source': px_per_mm_source,
@@ -145,13 +165,12 @@ def build(case_id, xy_px, centre_seed_px, *, mask_path=None, px_per_mm=None, fps
         out['equal_access_radius_px'] = wall_r - 2.0 * radius_mm * px_per_mm
         out['mask_file'] = None
     if container_radius_mm is not None:
-        r_container_m = float(container_radius_mm) / 1000.0
         out['container_radius_source'] = container_radius_source or 'supplied'
     else:
-        r_container_m = out['wall_radius_px'] / px_per_mm / 1000.0
-        out['container_radius_source'] = container_radius_source or 'image_envelope_plus_particle_radius'
+        out['container_radius_source'] = container_radius_source or wall_source
+    r_container_m = wall_r / px_per_mm / 1000.0
     out['container_radius_m'] = r_container_m
-    out['container_radius_px'] = r_container_m * 1000.0 * px_per_mm
+    out['container_radius_px'] = wall_r
     if radius_classes:
         # Occupy each class by its own area; one radius would overcount the large
         # discs and undercount the small ones.

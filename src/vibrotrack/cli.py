@@ -335,13 +335,20 @@ def _cmd_geometry(args):
         px_per_mm=cfg.px_per_mm, fps=cfg.fps, radius_mm=cfg.radius_mm,
         n_particles=n_particles, n_detected_median=float(np.median(counts)),
         px_per_mm_source=cfg.calibration_source, radius_classes=radius_classes,
+        wall_radius_px=args.wall_radius_px,
+        container_radius_mm=args.container_radius_mm,
+        container_radius_source=('explicit:--container-radius-mm'
+                                 if args.container_radius_mm is not None else None),
     )
     out = Path(args.out) if args.out else case_dir / 'geometry.json'
     G.write(out, rec)
     print('geometry: %s' % out)
     print('  centre_px      %s' % (rec.get('center_px'),))
-    print('  wall_radius_px %.2f' % rec['wall_radius_px'])
-    print('  phi            %s' % (rec.get('phi'),))
+    print('  wall_radius_px %.2f  (%s)' % (rec['wall_radius_px'], rec['wall_radius_source']))
+    print('  phi            %s  valid=%s' % (rec.get('phi'), rec.get('phi_valid')))
+    if rec.get('phi_valid') is False:
+        print('warning: the envelope fit failed; supply --wall-radius-px or '
+              '--container-radius-mm, otherwise phi is not usable', file=sys.stderr)
     return 0
 
 
@@ -544,6 +551,10 @@ def build_parser():
     p.add_argument('--fps', type=float, default=None)
     p.add_argument('--px-per-mm', type=float, default=None)
     p.add_argument('--diameter-mm', type=float, default=None)
+    p.add_argument('--wall-radius-px', type=float, default=None,
+                   help='explicit wall radius in px; overrides the particle envelope')
+    p.add_argument('--container-radius-mm', type=float, default=None,
+                   help='explicit container radius in mm; overrides the particle envelope')
     p.add_argument('--out', default=None)
     p.set_defaults(func=_cmd_geometry)
 
