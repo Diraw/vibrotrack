@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0 — 2026-11-12
+
+- Multi-radius detection for bidisperse beds. `detect2.frame` now infers one or two
+  radius classes from the free-fit radii (1-D k-means, centres at least
+  `radius_split_px` apart and the small class at least 5% of the solid peaks), or
+  accepts an explicit `radii=[r1, r2]`. Each candidate is fitted at its class
+  radius, the smaller class gets twice the search shift because the 14 mm template
+  does not match a 12 mm disc, and NMS uses the larger of the two radii.
+  Monodisperse output is unchanged: 300 paired G0 frames reproduce every detection
+  array exactly. On a 306-frame 12/14 mm test recording the small-disc match rate
+  rises from 83/173 to 150/173, but empty pockets between beads still admit false
+  small fits, so the class needs a temporal filter before production use.
+
 ## 0.9.5 — 2026-11-12
 
 - The candidate photometric veto now computes only the 80th-percentile

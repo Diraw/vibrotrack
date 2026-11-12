@@ -215,3 +215,51 @@ def test_prior_seed_recovers_a_particle_but_cannot_invent_one():
                      prior_xy=np.array([[320.0, 320.0]], np.float32))
     assert len(d2['xy_px']) == len(d0['xy_px'])
     assert not (np.hypot(d2['xy_px'][:, 0] - 320, d2['xy_px'][:, 1] - 320) < 4).any()
+
+
+def _frame_radii(items, size=700, seed=3, noise=6.0):
+    """Like _frame, but each item carries its own radius."""
+    rng = np.random.default_rng(seed)
+    im = np.full((size, size), 45, np.float32)
+    for x, y, r in items:
+        cv2.circle(im, (int(x), int(y)), int(round(r)), 220, -1)
+        cv2.line(im, (int(x), int(y)), (int(x + 0.75 * r), int(y - 0.5 * r)), 90, 5)
+    im += rng.normal(0, noise, im.shape)
+    return np.clip(im, 0, 255).astype(np.uint8)
+
+
+def test_detect2_bidisperse_infers_two_radius_classes():
+    """A mixed field must not force the small disc onto the large radius.
+
+    Ten discs on two rings: five at 37 px and five at 31 px, far enough apart that the
+    hard-disc NMS cannot merge a small one into a large one. The detector should infer
+    two radius classes and return a radius per detection, not one global value.
+    """
+    items = []
+    for t in np.linspace(0, 2 * np.pi, 5, endpoint=False):
+        items.append((350 + 160 * np.cos(t), 350 + 160 * np.sin(t), 37.0))
+    for t in np.linspace(0, 2 * np.pi, 5, endpoint=False):
+        items.append((350 + 65 * np.cos(t + 0.3), 350 + 65 * np.sin(t + 0.3), 31.0))
+    im = _frame_radii(items)
+    mask, _ = _mask()
+    d, info = D2.frame(im, mask, cv2.distanceTransform(mask, cv2.DIST_L2, 5),
+                       bbox=V1.mask_bbox(mask), interior_mask=mask,
+                       radii=[31.0, 37.0])
+    assert len(info['radii']) == 2, info['radii']
+    small = d['radius_px'] < 34
+    assert small.sum() >= 4, (int(small.sum()), np.unique(d['radius_px']))
+    assert (~small).sum() >= 4
+    for x, y, r in items:
+        dd = np.hypot(d['xy_px'][:, 0] - x, d['xy_px'][:, 1] - y).min()
+        assert dd < 2.5, (x, y, r, float(dd))
+
+
+def test_detect2_monodisperse_keeps_one_radius_class():
+    centers = [(350 + 110 * np.cos(t), 350 + 110 * np.sin(t))
+               for t in np.linspace(0, 2 * np.pi, 5, endpoint=False)]
+    im = _frame(centers)
+    mask, _ = _mask()
+    d, info = D2.frame(im, mask, cv2.distanceTransform(mask, cv2.DIST_L2, 5),
+                       bbox=V1.mask_bbox(mask), interior_mask=mask)
+    assert len(info['radii']) == 1
+    assert np.allclose(d['radius_px'], d['radius_px'][0])

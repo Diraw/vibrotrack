@@ -43,8 +43,44 @@ A2 = np.column_stack((CS, SN)).astype(np.float32)
 DEFAULTS = dict(thresh=0.20, min_rays=14, r_tol=1.5, max_shift=5.0,
                 solid_ns=30, min_sep=1.75, bright_min=80.0, radius_fallback=36.9,
                 avoid_r=0.0,
+                radius_split_px=4.0,  # two inferred classes need centres at least this far apart
                 prior_conf=0.5, prior_dedupe=0.0,   # 0 = keep every seed; the fit rejects stale ones   # a prior seed ranks below a real template peak
                 )   # avoid_r 0 = no fixed-disc guard; only wall_model=geometry sets one
+
+
+def _radius_classes(free_r, explicit=None, min_gap=4.0, min_share=0.05):
+    """Radius classes for one frame, from the free-fit radii or an explicit list.
+
+    A bidisperse bed produces two clean peaks in the free-fit radius histogram. One
+    dimensional k-means with k=2 finds them; if the centres are closer than ``min_gap``
+    or a class holds less than ``min_share`` of the solid peaks, the frame is treated
+    as monodisperse and a single median radius is returned.
+    """
+    r = np.asarray(free_r, float)
+    r = r[np.isfinite(r)]
+    if explicit is not None:
+        vals = np.sort(np.asarray(list(explicit), float).ravel())
+        vals = vals[np.isfinite(vals) & (vals > 0)]
+        if len(vals) >= 2:
+            return vals
+    if len(r) < 40:
+        return np.array([np.median(r)]) if len(r) else np.array([])
+    c = np.array([np.percentile(r, 10), np.percentile(r, 90)])
+    if c[1] - c[0] < min_gap:
+        return np.array([float(np.median(r))])
+    for _ in range(20):
+        lab = np.abs(r[:, None] - c[None, :]).argmin(1)
+        new = np.array([r[lab == k].mean() if (lab == k).any() else c[k] for k in range(2)])
+        if np.allclose(new, c):
+            break
+        c = new
+    c = np.sort(c)
+    if c[1] - c[0] < min_gap:
+        return np.array([float(np.median(r))])
+    lab = np.abs(r[:, None] - c[None, :]).argmin(1)
+    if min((lab == 0).sum(), (lab == 1).sum()) < max(10, int(min_share * len(r))):
+        return np.array([float(np.median(r))])
+    return c
 
 
 def _peaks(im, bbox, thresh):
@@ -145,7 +181,7 @@ def _marker(im, xy):
 
 
 def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=None,
-          prior_xy=None, **kw):
+          prior_xy=None, radii=None, **kw):
     """Detect discs. `search_mask` gates candidate centres (may be dilated);
 
     `interior_mask` (defaults to search_mask) defines `outside_mask` in the output.
@@ -184,19 +220,50 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
             conf0 = np.r_[conf0, np.full(len(pr), p['prior_conf'], np.float32)]
     if not len(xy0):
         return _empty(), dict(radius_ref=p['radius_fallback'], n_peaks=0, n_recovered=0,
-                              n_static=0, n_prior=0)
+                              n_static=0, n_prior=0, radii=[])
 
     strength, rr = _profile(im, xy0)
     coef, ns1, rmse1 = _fit_free(strength, rr)
     shift1 = np.linalg.norm(coef[:, :2], axis=1)
     solid = (ns1 >= p['solid_ns']) & (rmse1 < 1.8) & (shift1 < p['max_shift']) & \
             (coef[:, 2] > 30) & (coef[:, 2] < 42)
+    # The free-fit radius of a 12 mm disc can land just under 30 px, so the class
+    # inference uses a wider window; the single-radius path keeps the strict `solid`
+    # definition so monodisperse output is unchanged.
+    broad = (ns1 >= p['solid_ns']) & (rmse1 < 1.8) & (shift1 < 10.0) & \
+            (coef[:, 2] > 27) & (coef[:, 2] < 42)
     radius_ref = float(np.median(coef[solid, 2])) if solid.sum() >= 20 else p['radius_fallback']
-
-    c, ns, rmse = _fit_fixed(strength, rr, radius_ref)
+    classes = _radius_classes(coef[broad, 2], radii,
+                              min_gap=float(p['radius_split_px']))
+    if len(classes) > 1:
+        # Bidisperse: assign each candidate to its nearest free-fit radius class and run
+        # the fixed-radius fit per class, so a 12 mm disc is not forced onto a 14 mm rim.
+        lab = np.abs(coef[:, 2][:, None] - classes[None, :]).argmin(1)
+        c = np.zeros((len(xy0), 2), np.float64)
+        ns = np.zeros(len(xy0), np.int64)
+        rmse = np.zeros(len(xy0), np.float64)
+        rad_all = np.zeros(len(xy0), np.float32)
+        for k, rk in enumerate(classes):
+            m = lab == k
+            if not m.any():
+                continue
+            ck, nsk, rmsek = _fit_fixed(strength[m], rr[m], float(rk))
+            c[m], ns[m], rmse[m] = ck, nsk, rmsek
+            rad_all[m] = float(rk)
+        radius_ref = float(classes[int(np.argmax([np.sum(lab == k)
+                                                  for k in range(len(classes))]))])
+    else:
+        rad_all = np.full(len(xy0), radius_ref, np.float32)
+        c, ns, rmse = _fit_fixed(strength, rr, radius_ref)
     shift = np.linalg.norm(c, axis=1)
     xy = xy0 + c.astype(np.float32)
-    ok = (ns >= p['min_rays']) & (rmse < p['r_tol']) & (shift < p['max_shift'])
+    shift_tol = np.full(len(xy0), float(p['max_shift']))
+    if len(classes) > 1:
+        # A 12 mm disc does not match the 14 mm template, so its peak can sit several
+        # pixels off centre; allow the smaller class twice the search shift.
+        main_r = float(classes[int(np.argmax([np.sum(rad_all == rk) for rk in classes]))])
+        shift_tol[rad_all < 0.9 * main_r] = float(p['max_shift']) * 2.0
+    ok = (ns >= p['min_rays']) & (rmse < p['r_tol']) & (shift < shift_tol)
 
     # Fixed apparatus discs are perfect particle look-alikes. A real centre cannot sit closer
     # than 2r to one, so anything inside avoid_r is the disc, not a particle. Filter before the
@@ -224,16 +291,21 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
         d = np.hypot(pts[:, None, 0] - pts[None, :, 0], pts[:, None, 1] - pts[None, :, 1])
         np.fill_diagonal(d, 1e9)
         keep2 = np.ones(len(order), bool)
+        rr_o = rad_all[order]
+        # Use the larger of the two radii: a small disc must not be allowed to sit
+        # inside a large one just because its own separation threshold is smaller.
+        thr = p['min_sep'] * np.maximum(rr_o[:, None], rr_o[None, :])
         for i in range(len(order)):
             if keep2[i]:
-                keep2[d[i] < p['min_sep'] * radius_ref] = False
+                keep2[d[i] < thr[i]] = False
                 keep2[i] = True
         ok[order[~keep2]] = False
 
     sel = np.where(ok)[0]
     if not len(sel):
         return _empty(), dict(radius_ref=radius_ref, n_peaks=int(len(xy0) - n_prior),
-                              n_recovered=0, n_static=n_static, n_prior=n_prior)
+                              n_recovered=0, n_static=n_static, n_prior=n_prior,
+                              radii=[float(x) for x in classes])
     xy_s = xy[sel]
     n = len(xy_s)
     theta, angle_valid, offset, area, bright = _marker(im, xy_s)
@@ -241,7 +313,7 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     bd = dist[np.clip(xy_s[:, 1].astype(int), 0, dist.shape[0] - 1),
               np.clip(xy_s[:, 0].astype(int), 0, dist.shape[1] - 1)] if dist is not None \
         else np.full(n, np.nan)
-    rad = np.full(n, radius_ref, np.float32)
+    rad = rad_all[sel]
     inside = interior[np.clip(xy_s[:, 1].astype(int), 0, interior.shape[0] - 1),
                       np.clip(xy_s[:, 0].astype(int), 0, interior.shape[1] - 1)] > 0
     bits = (~angle_valid).astype(np.uint16) | ((nearest < 1.85 * rad).astype(np.uint16) << 1) \
@@ -256,7 +328,8 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
                quality_bits=bits,
                outside_mask=(~inside).astype(np.uint8))
     return det, dict(radius_ref=radius_ref, n_peaks=int(len(xy0) - n_prior), n_recovered=n,
-                     n_static=n_static, n_prior=n_prior)
+                     n_static=n_static, n_prior=n_prior,
+                     radii=[float(x) for x in classes])
 
 
 def _empty():

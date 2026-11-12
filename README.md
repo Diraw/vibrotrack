@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.9.5"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.10.0"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
