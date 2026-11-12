@@ -109,6 +109,20 @@ def _fit_fixed(strength, rr, r0, min_strength=20, tol=2.2):
     return c, ns, rmse
 
 
+def _brightness(im, xy):
+    """80th percentile of the inner disc patch, the photometric veto only.
+
+    ``_marker`` also fits the dark radius mark; the candidate veto uses nothing but
+    this brightness, so the first pass does not need the weight/centroid work.
+    """
+    n = len(xy)
+    mx = xy[:, 0, None, None] + PX
+    my = xy[:, 1, None, None] + PY
+    patch = cv2.remap(im, mx.reshape(n, -1), my.reshape(n, -1),
+                      cv2.INTER_LINEAR).reshape(n, 47, 47).astype(np.float32)
+    return np.percentile(patch[:, INNER], 80, axis=1)
+
+
 def _marker(im, xy):
     """Same estimator as v1: weighted centroid of the dark radius mark."""
     n = len(xy)
@@ -198,7 +212,7 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     # photometric veto: gaps between discs are dark
     cand = np.where(ok)[0]
     if len(cand):
-        theta_t, ok_t, off_t, area_t, bright_t = _marker(im, xy[cand])
+        bright_t = _brightness(im, xy[cand])
         ok[cand[bright_t <= p['bright_min']]] = False
 
     # hard-disc minimum separation, higher trust wins

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.5 — 2026-11-12
+
+- The candidate photometric veto now computes only the 80th-percentile
+  brightness (`_brightness`) instead of running the full marker fit and
+  discarding the angle/area/centroid fields. 300 paired real frames:
+  detection 0.2235 -> 0.2001 s per frame (-10.4%), every detection array
+  identical.
+
 ## 0.9.4 — 2026-11-12
 
 - `refine --workers N` fits independent holes in parallel. Each worker decodes a

@@ -1,3 +1,3 @@
 """vibrotrack: dense particle tracking for quasi-2D vibrated granular monolayers."""
 
-__version__ = "0.9.4"
+__version__ = "0.9.5"
