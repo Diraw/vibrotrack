@@ -40,14 +40,21 @@ def _assign(pred, cur, gate):
     """
     if (len(pred) < 64 or len(cur) < 2 or not np.isfinite(gate)
             or gate <= 0 or gate >= 1e6
-            or not np.isfinite(pred).all() or not np.isfinite(cur).all()):
+            or pred.dtype != np.float64 or cur.dtype != np.float64
+            or not np.isfinite(pred).all() or not np.isfinite(cur).all()
+            or np.max(np.abs(pred)) > 1e9 or np.max(np.abs(cur)) > 1e9):
         return _assign_dense(pred, cur, gate)
-    radius = gate + max(1e-9, abs(gate) * 1e-10)
+    # Bounded float64 pixel coordinates only; leave a generous numeric guard
+    # between tree pruning/ranking and the strict reference acceptance gate.
+    margin = max(1e-6, abs(gate) * 1e-10)
+    radius = gate + margin
     _distance, indices = cKDTree(cur).query(pred, k=2, distance_upper_bound=radius)
     present = indices < len(cur)
     safe = np.minimum(indices, len(cur) - 1)
     delta = pred[:, None, :] - cur[safe]
     actual = np.hypot(delta[:, :, 0], delta[:, :, 1])
+    if np.any(present & (np.abs(actual - gate) <= margin)):
+        return _assign_dense(pred, cur, gate)
     inside = present & (actual < gate)
     if np.any(inside.sum(axis=1) > 1):
         return _assign_dense(pred, cur, gate)

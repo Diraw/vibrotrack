@@ -53,3 +53,32 @@ def test_large_competition_falls_back(monkeypatch):
     actual = L._assign(pred, cur, 33.)
     assert calls
     assert all(np.array_equal(a, b) for a, b in zip(actual, expected))
+
+
+@pytest.mark.parametrize('dtype,offset', [(np.float32, 0.), (np.float64, 1e100)])
+def test_unusual_precision_uses_dense(monkeypatch, dtype, offset):
+    pred = np.column_stack([np.arange(100) * 80., np.zeros(100)]).astype(dtype) + offset
+    cur = pred.copy()
+    original = L._assign_dense
+    calls = []
+    def counted(*args):
+        calls.append(True)
+        return original(*args)
+    monkeypatch.setattr(L, '_assign_dense', counted)
+    L._assign(pred, cur, 33.)
+    assert calls
+
+
+def test_near_gate_uses_reference(monkeypatch):
+    pred = np.column_stack([np.arange(100) * 80., np.zeros(100)])
+    cur = pred + [np.nextafter(33., 0.), 0.]
+    original = L._assign_dense
+    calls = []
+    def counted(*args):
+        calls.append(True)
+        return original(*args)
+    monkeypatch.setattr(L, '_assign_dense', counted)
+    a = L._assign(pred, cur, 33.)
+    b = original(pred, cur, 33.)
+    assert calls
+    assert all(np.array_equal(x, y) for x, y in zip(a, b))
