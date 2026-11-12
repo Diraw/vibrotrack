@@ -65,3 +65,24 @@ benchmark tool.
 
 Rejected: local identity splice (EMA/competition counterexamples), marker reuse
 (9.1% paired, below the bar), GPU fixed-fit (about 2 ms, no full regression).
+
+## Rejected routes (2026-11-12, after 0.9.5)
+
+A local NVMe working copy of the raw frames was built and measured. Raw reads
+are 2-3x faster than the USB archive (3535 vs 1066 MB/s with eight threads), but
+extraction does not improve: 3000-frame runs spanned 120.9-184.4 s across
+raw/output disk combinations, and the fastest was the USB archive with a C:
+output. Full 9001-frame runs were 383.8 s (USB) against 426.4/466.4 s (NVMe),
+because E: also carries the system, project and output traffic, so read and
+write compete on the same WD Blue device.
+
+The limiting resource is CPU, not storage. Eight workers use 35-46% of 20
+logical CPUs on this i7-12700H (6 P-cores + 8 E-cores), single-thread detection
+is 0.20 s/frame and eight-worker wall clock is 0.04-0.05 s/frame, i.e. 4-5x
+scaling rather than 8x. E-core scheduling and turbo loss under an eight-core
+load are the plausible causes; the measurement noise on this workstation is
++-30% between repeats, so worker-count micro-tuning (6 vs 8) is not resolvable
+here and is left at the documented 6-8 range.
+
+The 49 GB copy was removed after the measurements. Raw read bandwidth was never
+the constraint: 52 GB takes about 15 s on NVMe, while detection takes 200+ s.
