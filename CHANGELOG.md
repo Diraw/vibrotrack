@@ -49,8 +49,8 @@
 - `refine` also fills head gaps: a track that starts after the first frame is
   extrapolated backwards from its first velocity and fitted like any other hole.
   On the 306-frame recording the first frame goes from 87.9% to 96.5% small-disc
-  recall and 98.1% to 99.7% large-disc recall, matching the 98-99% of the
-  interior frames without manual first-frame editing.
+  recall and 98.1% to 99.7% large-disc recall on the raw labels, matching the
+  98-99% of the interior frames without manual first-frame editing.
 - `refine` fits each hole at the radius of its two neighbouring detections instead
   of one global median, and `--min-track-length N` drops identities shorter than N
   frames before gap finding. On the 306-frame 12/14 mm recording the radius change
@@ -61,11 +61,14 @@
 - Measured limits on the 306-frame recording (manual labels, 6 px match): recall
   97.9 / 98.7 / 99.2% (small 96.5 / 98.2 / 98.8, large 99.7 / 99.4 / 99.7),
   median position error < 1 px; per-frame count 829-843 (median 840) against 847
-  labelled particles. The 857 refined tracks have median length 306 frames and
-  only 10 are shorter than 50 frames, so the earlier fragment problem is gone in
-  the refined batch. The remaining misses are dense contacts with no template
-  peak (lowering the threshold adds 2 of 487) plus a few near the wall; they are
-  not recoverable from a single frame.
+  labelled particles. Six to eight labels per frame sit on the frozen screws that
+  the mask deliberately removes (within 3 px of a frozen-disc centre), so the
+  real denominators are 839-842 and the recall is **98.5 / 99.3 / 99.5%**. The
+  857 refined tracks have median length 306 frames and only 10 are shorter than
+  50 frames, so the earlier fragment problem is gone in the refined batch. The
+  remaining misses (13 / 6 / 4 per frame) are dense contacts with no template
+  peak (lowering the threshold adds 2 of 487); none is within 40 px of the wall,
+  so a wall rule is not the answer.
 
 ## 0.9.5 — 2026-11-12
 
