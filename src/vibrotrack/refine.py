@@ -411,6 +411,101 @@ def _marker_fields(fit, radius, image):
                 marker_area_px=int(area[0]))
 
 
+def _head_fill(frames, by_fid, image_for, max_head, params, radius_fallback):
+    """Extend every track backwards from its first detection, one frame at a time.
+
+    The detector needs a few frames of prior before it locks onto a disc in a dim or
+    crowded corner; those tracks start at frame 20-30 and the one-shot head gap in
+    ``find_gaps`` cannot bridge more than ``max_gap`` frames. This walk uses the
+    first two rows only for the initial velocity, then re-estimates it from each
+    accepted fit, so the prediction does not drift over 30 frames.
+
+    Returns [(track_id, first_frame, n_added), ...].
+    """
+    track_ids = set()
+    for _fid, rec in frames:
+        track_ids.update(int(s) for s in np.unique(rec['segment_id']) if int(s) >= 0)
+    out = []
+    for track_id in sorted(track_ids):
+        pts = []
+        for fid, rec in frames:
+            m = rec['segment_id'] == track_id
+            if not m.any():
+                continue
+            for k in np.nonzero(m)[0]:
+                pts.append((int(fid), np.asarray(rec['xy_px'][k], float),
+                            float(rec['radius_px'][k])))
+        if len(pts) < 2:
+            continue
+        pts.sort(key=lambda item: item[0])
+        f0, p_prev, r = pts[0][0], pts[0][1], pts[0][2]
+        if f0 <= 0 and len(pts) >= 3 and pts[1][0] > 1:
+            # A track that exists at frame 0 but then disappears for 20-30 frames:
+            # walk backward from the first row after the hole, stop before frame 0.
+            f_start, p_start = pts[1][0], pts[1][1]
+            f_next, p_next = pts[2][0], pts[2][1]
+            if f_next == f_start:
+                continue
+            v = (p_next - p_start) / float(f_next - f_start)
+            cur_p = p_start
+            added = 0
+            for f in range(f_start - 1, 0, -1):
+                pred = cur_p - v
+                image = image_for(f)
+                fit = fit_local(image, pred, r, **params)
+                if fit is None:
+                    break
+                rec = by_fid.get(f)
+                if rec is None:
+                    break
+                existing = np.asarray(rec['xy_px'], float).reshape(-1, 2)
+                nearest = (float(np.hypot(existing[:, 0] - fit['xy_px'][0],
+                                          existing[:, 1] - fit['xy_px'][1]).min())
+                           if len(existing) else float('inf'))
+                if nearest < float(params['min_sep']) * r:
+                    break
+                push_row(rec, _row_from(fit, r, nearest, image))
+                added += 1
+                new_p = np.asarray(fit['xy_px'], float)
+                v = cur_p - new_p
+                cur_p = new_p
+            if added:
+                out.append((track_id, f0, added))
+            continue
+        if f0 <= 0:
+            continue
+        f_next, p_next = pts[1][0], pts[1][1]
+        if f_next == f0:
+            continue
+        v = (p_next - p_prev) / float(f_next - f0)
+        cur_p = p_prev
+        low = max(0, f0 - int(max_head))
+        added = 0
+        for f in range(f0 - 1, low - 1, -1):
+            pred = cur_p - v
+            image = image_for(f)
+            fit = fit_local(image, pred, r, **params)
+            if fit is None:
+                break
+            rec = by_fid.get(f)
+            if rec is None:
+                break
+            existing = np.asarray(rec['xy_px'], float).reshape(-1, 2)
+            nearest = (float(np.hypot(existing[:, 0] - fit['xy_px'][0],
+                                      existing[:, 1] - fit['xy_px'][1]).min())
+                       if len(existing) else float('inf'))
+            if nearest < float(params['min_sep']) * r:
+                break
+            push_row(rec, _row_from(fit, r, nearest, image))
+            added += 1
+            new_p = np.asarray(fit['xy_px'], float)
+            v = cur_p - new_p
+            cur_p = new_p
+        if added:
+            out.append((track_id, f0, added))
+    return out
+
+
 def _row_from(fit, radius, nearest, image, fields=None):
     f = _marker_fields(fit, radius, image) if fields is None else fields
     bits = 0 if f['angle_valid'] else 1
@@ -566,7 +661,7 @@ def _annotate_readme(out_root, record):
 def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
                 min_rays=None, max_rmse=None, max_offset=None, min_sep=None,
                 limit=0, force=False, verbose=False, incremental=True, workers=1,
-                min_track_length=0, recover=False):
+                min_track_length=0, recover=False, head_fill=0):
     """Recover missing particles on one case and write a new, re-linked copy."""
     case_dir = R.resolve_case_dir(case_dir)
     out_root = Path(out_root).expanduser().resolve()
@@ -729,6 +824,15 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
 
     # Gap metadata supplies fitting seeds, not authoritative identities.
     # Replay the reference state after insertions (EMA changes can propagate).
+    head_fill_info = {'max_frames': int(head_fill or 0), 'n_added': 0, 'tracks': []}
+    if int(head_fill or 0) > 0:
+        # Before the Hough pass: those rows would look like an existing detection and
+        # stop the backward walk at the first frame it covers.
+        filled = _head_fill(frames, by_fid, image_for, int(head_fill), params, radius)
+        head_fill_info['tracks'] = [{'track': int(t), 'first_frame': int(f0),
+                                     'n_added': int(n)} for t, f0, n in filled]
+        head_fill_info['n_added'] = sum(int(n) for _t, _f0, n in filled)
+
     recovery = {'enabled': bool(recover)}
     if recover:
         mask = _load_mask(case_dir)
@@ -801,6 +905,7 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
         'n_rejected': len(attempts) - n_recovered,
         'attempts': attempts,
         'recovery': recovery,
+        'head_fill': head_fill_info,
         'linker': linker,
         'link_mode': link_mode,
         'link_fallback_reason': link_fallback_reason,
@@ -840,6 +945,8 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
             'link_mode': link_mode,
             'recovery': {'enabled': bool(recover),
                          'n_added': int(recovery.get('n_added', 0))},
+            'head_fill': {'max_frames': int(head_fill or 0),
+                          'n_added': int(head_fill_info['n_added'])},
         }
         R._write_json(dataset_path, d)
     return record, seq_out

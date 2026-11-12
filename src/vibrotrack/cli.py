@@ -240,7 +240,8 @@ def _cmd_refine(args):
         min_rays=args.min_rays, max_rmse=args.max_rmse, max_offset=args.max_offset,
         min_sep=args.min_sep, limit=args.limit, force=args.force, verbose=args.verbose,
         incremental=not args.full_relink, workers=args.workers,
-        min_track_length=args.min_track_length, recover=args.recover)
+        min_track_length=args.min_track_length, recover=args.recover,
+        head_fill=args.head_fill)
     print('case:      %s' % rec['case'])
     print('gaps:      %d; attempts: %d; recovered: %d; rejected: %d' % (
         rec['n_gaps'], rec['n_attempts'], rec['n_recovered'], rec['n_rejected']))
@@ -524,6 +525,8 @@ def build_parser():
                    help='drop identities shorter than this many frames before gap finding (0 = keep all)')
     p.add_argument('--recover', action='store_true',
                    help='add detections the template missed: Hough seeds + local fit + marker veto')
+    p.add_argument('--head-fill', type=int, default=0,
+                   help='extend tracks backwards up to N frames from their first detection')
     p.add_argument('--verbose', action='store_true', help='print every attempt')
     p.add_argument('--full-relink', action='store_true',
                    help='explicitly request reference re-linking (currently always used for correctness)')

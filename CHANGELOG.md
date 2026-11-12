@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.2 — 2026-11-12
+
+- `refine --head-fill N`: walk every track backwards from its first detection (and
+  into the first hole of a track that already has a row at frame 0), one frame at a
+  time, re-estimating the velocity from each accepted fit. A long warm-up hole
+  (20-30 frames while the detector's prior locks on) is beyond `--max-gap` and never
+  bridges; a one-shot linear prediction over 30 frames drifts. The walk runs before
+  `--recover`, so Hough rows cannot stop it at the first covered frame.
+- On the 306-frame 12/14 mm recording: 6 tracks started at frames 21-102 after
+  20-30 frame holes; 163 rows filled. Every frame now has 839 detections and all
+  839 tracks are 306 frames (256,734 rows = 839 x 306). `--min-track-length 2`
+  removed the single-frame pocket false positive at frame 3 (its position has no
+  disc; the local fit fails). The eight labelled frames stay at 100% recall and
+  100% precision.
+
 ## 0.10.1 — 2026-11-12
 
 - `refine` head gaps now extrapolate with the velocity at the **start** of the track.

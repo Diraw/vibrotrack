@@ -347,3 +347,22 @@ def test_detector_recovery_respects_the_mask():
                             mask.astype(bool), [R], dict(RF.RECOVER_DEFAULTS),
                             dict(RF.DEFAULTS))
     assert rows == []
+
+
+def test_head_fill_walks_back_from_the_first_detection():
+    # A track that only starts at frame 3: the walk back should fit frames 0-2
+    # from the local disc, one frame at a time.
+    rows = [(f, [((300.0 + (f - 3), 350.0), 0)]) for f in range(3, 7)]
+    frames = _frames(rows)
+    template = frames[0][1]
+    for f in (0, 1, 2):
+        frames.insert(f, (f, {k: v[:0] for k, v in template.items()}))
+    by_fid = dict(frames)
+    images = {f: _frame([(300.0 + (f - 3), 350.0)]) for f in range(7)}
+    filled = RF._head_fill(frames, by_fid, lambda f: images[f], 5,
+                           dict(RF.DEFAULTS), R)
+    assert len(filled) == 1
+    assert filled[0][2] == 3
+    for f in (0, 1, 2):
+        assert len(by_fid[f]['xy_px']) == 1
+        assert abs(float(by_fid[f]['xy_px'][0][0]) - (300.0 + (f - 3))) < 3

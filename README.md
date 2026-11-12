@@ -35,7 +35,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.10.1"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.10.2"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -333,7 +333,7 @@ HDD 上不要开 12 workers，会互相抢 I/O。
 `refine` 在全量 G0 上补 66 个缺口约 49 s；开启 `prior_dedupe` 后缺口变多（约 385 个），
 补回时间相应增加，但最终行数、轨迹数和每帧计数不变。
 
-## 已知限制（v0.10.1）
+## 已知限制（v0.10.2）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。
