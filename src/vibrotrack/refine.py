@@ -88,12 +88,15 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
                               for _fid, rec in frames])
     xy_all = np.concatenate([np.asarray(rec['xy_px'], float).reshape(-1, 2)
                              for _fid, rec in frames])
+    rad_all = np.concatenate([np.asarray(rec['radius_px'], float)
+                              for _fid, rec in frames])
     keep = seg_all >= 0
-    seg_all, fid_all, xy_all = seg_all[keep], fid_all[keep], xy_all[keep]
+    seg_all, fid_all, xy_all, rad_all = seg_all[keep], fid_all[keep], xy_all[keep], rad_all[keep]
     if not len(seg_all):
         return []
     order = np.argsort(seg_all, kind='stable')
     seg_s, fid_s, xy_s = seg_all[order], fid_all[order], xy_all[order]
+    rad_s = rad_all[order]
     uniq, first, npts = np.unique(seg_s, return_index=True, return_counts=True)
     last = first + npts - 1
 
@@ -106,6 +109,7 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
         gaps.append({'track': int(seg_s[i]), 'f_lo': int(fid_s[i]),
                      'f_hi': int(fid_s[i + 1]), 'xy_lo': xy_s[i].copy(),
                      'xy_hi': xy_s[i + 1].copy(),
+                     'r_lo': float(rad_s[i]), 'r_hi': float(rad_s[i + 1]),
                      'frames': list(range(int(fid_s[i]) + 1, int(fid_s[i + 1]))),
                      'kind': 'interior'})
 
@@ -143,6 +147,7 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
                     continue
             gaps.append({'track': tid, 'f_lo': f0, 'f_hi': f0 + k,
                          'xy_lo': xy0.copy(), 'xy_hi': (xy0 + v * k).copy(),
+                         'r_lo': float(rad_s[last[i]]), 'r_hi': float(rad_s[last[i]]),
                          'frames': [f0 + k], 'kind': 'tail'})
 
     # Boundary holes: an end and a later start that the linker could not join.
@@ -161,6 +166,7 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
             gaps.append({'track': int(uniq[i]), 'to_track': int(uniq[j]),
                          'f_lo': int(end_fid[i]), 'f_hi': int(first_fid[j]),
                          'xy_lo': end_xy[i].copy(), 'xy_hi': first_xy[j].copy(),
+                         'r_lo': float(rad_s[last[i]]), 'r_hi': float(rad_s[first[j]]),
                          'frames': list(range(int(end_fid[i]) + 1, int(first_fid[j]))),
                          'kind': 'boundary'})
 
@@ -300,8 +306,8 @@ def _fit_frame_group(task):
     path, levels, items, radius, params = task
     image = X.read_image(str(path), levels)
     out = []
-    for gi, fid, pred in items:
-        fit = fit_local(image, pred, radius, **params)
+    for gi, fid, pred, r_fit in items:
+        fit = fit_local(image, pred, r_fit, **params)
         fields = None if fit is None else _marker_fields(fit, radius, image)
         out.append((gi, fid, fit, fields))
     return out
@@ -428,7 +434,8 @@ def _annotate_readme(out_root, record):
 
 def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
                 min_rays=None, max_rmse=None, max_offset=None, min_sep=None,
-                limit=0, force=False, verbose=False, incremental=True, workers=1):
+                limit=0, force=False, verbose=False, incremental=True, workers=1,
+                min_track_length=0):
     """Recover missing particles on one case and write a new, re-linked copy."""
     case_dir = R.resolve_case_dir(case_dir)
     out_root = Path(out_root).expanduser().resolve()
@@ -448,6 +455,32 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
             if 'recovered' not in rec:
                 rec['recovered'] = np.zeros(len(rec['xy_px']), np.uint8)
     frames = [item for group in chunk_frames for item in group]
+    if int(min_track_length or 0) > 0:
+        # Fragments are the signature of a false detection: a pocket fit repeats at the
+        # same geometry and cannot survive as a long track. Drop whole identities below
+        # the length threshold before gap finding, so refine does not try to bridge a
+        # noise fragment into a real neighbour.
+        counts = {}
+        for _fid, rec in frames:
+            for sid, n in zip(*np.unique(rec['segment_id'], return_counts=True)):
+                counts[int(sid)] = counts.get(int(sid), 0) + int(n)
+        keep = np.array([sid for sid, n in counts.items() if n >= int(min_track_length)],
+                        np.int64)
+        if len(keep):
+            for _fid, rec in frames:
+                m = np.isin(rec['segment_id'], keep)
+                if not m.all():
+                    for key in list(rec):
+                        rec[key] = rec[key][m]
+            # renumber surviving identities by first appearance for a dense id range
+            remap = {}
+            for _fid, rec in frames:
+                for sid in rec['segment_id']:
+                    if int(sid) not in remap:
+                        remap[int(sid)] = len(remap)
+            for _fid, rec in frames:
+                rec['segment_id'] = np.array([remap[int(s)] for s in rec['segment_id']],
+                                             np.int32)
     if radius is None:
         radii = np.concatenate([np.asarray(rec['radius_px'], float)
                                 for _fid, rec in frames])
@@ -501,8 +534,12 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
         # group by frame so each tile is decoded once per worker.
         groups = {}
         for gi, gap in enumerate(gaps):
+            r_gap = float(np.mean([gap.get('r_lo', radius), gap.get('r_hi', radius)]))
+            if not np.isfinite(r_gap) or r_gap <= 0:
+                r_gap = radius
             for fid in gap['frames']:
-                groups.setdefault(int(fid), []).append((gi, int(fid), predict(gap, fid)))
+                groups.setdefault(int(fid), []).append(
+                    (gi, int(fid), predict(gap, fid), r_gap))
         tasks = [(str(files[fid]), levels, items, radius, params)
                  for fid, items in sorted(groups.items())]
         fit_cache = {}
@@ -514,10 +551,13 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
         for fid in gap['frames']:
             fid = int(fid)
             pred = predict(gap, fid)
+            r_fit = float(np.mean([gap.get('r_lo', radius), gap.get('r_hi', radius)]))
+            if not np.isfinite(r_fit) or r_fit <= 0:
+                r_fit = radius
             if fit_cache is not None:
                 fit, fields = fit_cache[(gi, fid)]
             else:
-                fit = fit_local(image_for(fid), pred, radius, **params)
+                fit = fit_local(image_for(fid), pred, r_fit, **params)
                 fields = None
             reason = None
             nearest = None
@@ -528,10 +568,10 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
                 nearest = float(np.hypot(existing[:, 0] - fit['xy_px'][0],
                                          existing[:, 1] - fit['xy_px'][1]).min()) \
                     if len(existing) else float('inf')
-                if nearest < float(params['min_sep']) * radius:
+                if nearest < float(params['min_sep']) * r_fit:
                     reason = 'duplicate centre (%.1f px)' % nearest
             if reason is None:
-                push_row(by_fid[fid], _row_from(fit, radius, nearest,
+                push_row(by_fid[fid], _row_from(fit, r_fit, nearest,
                                                 None if fields is not None else image_for(fid),
                                                 fields))
                 recovered_rows.append({'gap': gap, 'fid': int(fid),

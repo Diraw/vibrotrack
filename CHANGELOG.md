@@ -1,6 +1,13 @@
 # Changelog
 
 ## 0.10.0 — 2026-11-12
+  - `refine` now fits each hole at the radius of its two neighbouring detections
+    instead of one global median, and `--min-track-length N` drops identities shorter
+    than N frames before gap finding. On the 306-frame 12/14 mm recording the radius
+    change alone cuts refused attempts from 181 to 32 and leaves 0 gap rows; the
+    length filter removes the fragments that pocket fits form (ml=50: 561 rows/frame,
+    889 tracks; ml=100: 455 rows/frame, 536 tracks; about 526 particles).
+
 
 - Multi-radius detection for bidisperse beds. `detect2.frame` now infers one or two
   radius classes from the free-fit radii (1-D k-means, centres at least
