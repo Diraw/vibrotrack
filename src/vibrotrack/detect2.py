@@ -307,9 +307,11 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
         np.fill_diagonal(d, 1e9)
         keep2 = np.ones(len(order), bool)
         rr_o = rad_all[order]
-        # Use the larger of the two radii: a small disc must not be allowed to sit
-        # inside a large one just because its own separation threshold is smaller.
-        thr = p['min_sep'] * np.maximum(rr_o[:, None], rr_o[None, :])
+        # Scale by the mean of the two radii. Using the larger radius would delete a
+        # real 12 mm disc that sits next to a 14 mm one whenever the fitted centres
+        # drift a couple of pixels (their physical minimum is r1 + r2 = 68 px, while
+        # 1.75 * 37 = 64.75 leaves almost no margin).
+        thr = p['min_sep'] * 0.5 * (rr_o[:, None] + rr_o[None, :])
         for i in range(len(order)):
             if keep2[i]:
                 keep2[d[i] < thr[i]] = False
