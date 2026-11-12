@@ -83,7 +83,7 @@ def _radius_classes(free_r, explicit=None, min_gap=4.0, min_share=0.05):
     return c
 
 
-def _peaks(im, bbox, thresh):
+def _peaks(im, bbox, thresh, extra_template=None):
     small = cv2.resize(im, None, fx=.5, fy=.5, interpolation=cv2.INTER_AREA)
     if bbox is not None:
         x0, x1, y0, y1 = bbox
@@ -93,12 +93,33 @@ def _peaks(im, bbox, thresh):
     else:
         cx0 = cy0 = 0
         sub = small
-    score = cv2.matchTemplate(sub.astype(np.float32) / 255, TEMPLATE, cv2.TM_CCOEFF_NORMED)
-    pk = (score == cv2.dilate(score, np.ones((27, 27), np.uint8))) & (score > thresh)
-    yy, xx = np.where(pk)
-    conf = score[yy, xx]
-    xy = np.column_stack(((xx + cx0 + 23) * 2, (yy + cy0 + 23) * 2)).astype(np.float32)
-    return xy, conf.astype(np.float32)
+    templates = [TEMPLATE] + ([extra_template] if extra_template is not None else [])
+    found = []
+    for template in templates:
+        score = cv2.matchTemplate(sub.astype(np.float32) / 255, template, cv2.TM_CCOEFF_NORMED)
+        pk = (score == cv2.dilate(score, np.ones((27, 27), np.uint8))) & (score > thresh)
+        yy, xx = np.where(pk)
+        if len(yy):
+            found.append(np.column_stack((
+                (xx + cx0 + 23) * 2, (yy + cy0 + 23) * 2, score[yy, xx])))
+    if not found:
+        return np.zeros((0, 2), np.float32), np.zeros(0, np.float32)
+    cand = np.vstack(found).astype(np.float64)
+    if len(cand) > 1:
+        # merge the two template peak sets: keep the higher-scoring peak inside 15 px
+        order = np.argsort(-cand[:, 2])
+        tree = cKDTree(cand[:, :2])
+        keep = np.ones(len(cand), bool)
+        rank = np.empty(len(cand), np.int64)
+        rank[order] = np.arange(len(cand))
+        for i in order:
+            if not keep[i]:
+                continue
+            for j in tree.query_ball_point(cand[i, :2], 15.0):
+                if rank[j] > rank[i]:
+                    keep[j] = False
+        cand = cand[keep]
+    return cand[:, :2].astype(np.float32), cand[:, 2].astype(np.float32)
 
 
 def _profile(im, xy):
@@ -181,7 +202,7 @@ def _marker(im, xy):
 
 
 def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=None,
-          prior_xy=None, radii=None, **kw):
+          prior_xy=None, radii=None, small_template_radius=None, **kw):
     """Detect discs. `search_mask` gates candidate centres (may be dilated);
 
     `interior_mask` (defaults to search_mask) defines `outside_mask` in the output.
@@ -200,7 +221,8 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     p.update({k: v for k, v in kw.items() if k in DEFAULTS})
     interior = search_mask if interior_mask is None else interior_mask
 
-    xy0, conf0 = _peaks(im, bbox, p['thresh'])
+    extra = None if small_template_radius is None else         V1.template(float(small_template_radius))
+    xy0, conf0 = _peaks(im, bbox, p['thresh'], extra)
     keep = search_mask[np.clip(xy0[:, 1].astype(int), 0, search_mask.shape[0] - 1),
                        np.clip(xy0[:, 0].astype(int), 0, search_mask.shape[1] - 1)] > 0
     xy0, conf0 = xy0[keep], conf0[keep]

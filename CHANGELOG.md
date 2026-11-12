@@ -2,6 +2,16 @@
 
 ## 0.10.0 — 2026-11-12
 
+- A second template can be matched for the smaller radius class
+  (`frame(..., small_template_radius=15.5)`, px in the 0.5x image). The 14 mm
+  template only finds a peak on 49.5% of labelled 12 mm discs; a dedicated 12 mm
+  template finds 95.9%. Peak sets from both templates are merged with a 15 px
+  keep-the-higher-score suppression. On the 306-frame 12/14 mm recording, manual
+  labels (360 large + 487/488 small per frame) give small-disc recall 38.8/42.7/
+  45.1% before and 87.9/94.5/95.9% after; tracks 1193 -> 852 against 847 real
+  particles and link_fraction 0.9676 -> 0.9961. Monodisperse G0 is unchanged
+  (300 frames, every array identical) because the parameter defaults to None.
+
 - Multi-radius detection for bidisperse beds. `detect2.frame` now infers one or two
   radius classes from the free-fit radii (1-D k-means, centres at least
   `radius_split_px` apart and the small class at least 5% of the solid peaks), or
