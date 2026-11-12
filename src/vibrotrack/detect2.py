@@ -258,12 +258,17 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     shift = np.linalg.norm(c, axis=1)
     xy = xy0 + c.astype(np.float32)
     shift_tol = np.full(len(xy0), float(p['max_shift']))
+    min_rays_pt = np.full(len(xy0), float(p['min_rays']))
     if len(classes) > 1:
         # A 12 mm disc does not match the 14 mm template, so its peak can sit several
-        # pixels off centre; allow the smaller class twice the search shift.
+        # pixels off centre; allow the smaller class twice the search shift. Its ray
+        # count is also the strongest separator from a pocket between beads (real
+        # small discs keep 31-53 rays, pocket fits 18-31), so require twice the rays.
         main_r = float(classes[int(np.argmax([np.sum(rad_all == rk) for rk in classes]))])
-        shift_tol[rad_all < 0.9 * main_r] = float(p['max_shift']) * 2.0
-    ok = (ns >= p['min_rays']) & (rmse < p['r_tol']) & (shift < shift_tol)
+        smaller = rad_all < 0.9 * main_r
+        shift_tol[smaller] = float(p['max_shift']) * 2.0
+        min_rays_pt[smaller] = float(p['min_rays']) * 2.0
+    ok = (ns >= min_rays_pt) & (rmse < p['r_tol']) & (shift < shift_tol)
 
     # Fixed apparatus discs are perfect particle look-alikes. A real centre cannot sit closer
     # than 2r to one, so anything inside avoid_r is the disc, not a particle. Filter before the
