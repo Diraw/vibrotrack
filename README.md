@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.9.3"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.9.4"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -180,8 +180,13 @@ vibrotrack refine \
   --case-dir relinked/case01 \
   --raw frames \
   --out refined/case01 \
-  --max-gap 10
+  --max-gap 10 \
+  --workers 8
 ```
+
+`--workers N` 并行拟合互不依赖的缺口：每个进程只解码一次该帧并返回拟合字段，
+不传整幅图像。G0 的 468 次尝试从 100.6 s 降到 44.2 s，`refine.json` 的 attempts
+和 chunk 的每个数组都与串行结果完全相同。
 
 检测补点是增量式的：已有检测值保留，新行带 `recovered=1`。身份链接目前使用全量
 参考链接器：旧的局部拼接虽在 G0 上一致，却在竞争匹配/EMA 速度的反例中不等价，

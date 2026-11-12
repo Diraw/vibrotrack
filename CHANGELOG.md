@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.4 — 2026-11-12
+
+- `refine --workers N` fits independent holes in parallel. Each worker decodes a
+  frame once and returns only the fit fields, so no full frame crosses a process
+  boundary. G0 (391 gaps / 468 attempts): 100.6 s -> 44.2 s; `refine.json`
+  attempts and every chunk array are identical to the serial run.
+
 ## 0.9.3 — 2026-11-12
 
 - Harden the exact assignment fast path: refuse float32 input, nonfinite or

@@ -232,7 +232,7 @@ def _cmd_refine(args):
         args.case_dir, args.out, args.raw, max_gap=args.max_gap, radius=args.radius,
         min_rays=args.min_rays, max_rmse=args.max_rmse, max_offset=args.max_offset,
         min_sep=args.min_sep, limit=args.limit, force=args.force, verbose=args.verbose,
-        incremental=not args.full_relink)
+        incremental=not args.full_relink, workers=args.workers)
     print('case:      %s' % rec['case'])
     print('gaps:      %d; attempts: %d; recovered: %d; rejected: %d' % (
         rec['n_gaps'], rec['n_attempts'], rec['n_recovered'], rec['n_rejected']))
@@ -492,6 +492,8 @@ def build_parser():
     p.add_argument('--min-sep', type=float, default=None,
                    help='reject a fit closer than this many radii to an existing centre (default 1.6)')
     p.add_argument('--limit', type=int, default=0, help='only attempt the first N gaps')
+    p.add_argument('--workers', type=int, default=1,
+                   help='parallel fitting processes; each frame is decoded once (default 1)')
     p.add_argument('--verbose', action='store_true', help='print every attempt')
     p.add_argument('--full-relink', action='store_true',
                    help='explicitly request reference re-linking (currently always used for correctness)')

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -262,23 +263,48 @@ def push_row(rec, row):
         rec[key] = np.concatenate([arr, add], axis=0)
 
 
-def _row_from(fit, radius, nearest, image):
+def _marker_fields(fit, radius, image):
+    """Everything a recovered row needs from the marker pass except the neighbour."""
     xy = np.asarray(fit['xy_px'], np.float32).reshape(1, 2)
     theta, angle_ok, offset, area, _bright = D2._marker(image, xy)
-    bits = 0 if bool(angle_ok[0]) else 1
+    return dict(xy_px=xy[0],
+                theta_rad=float(theta[0]) if np.isfinite(theta[0]) else np.nan,
+                angle_valid=bool(angle_ok[0]),
+                marker_offset_px=float(offset[0]),
+                marker_area_px=int(area[0]))
+
+
+def _row_from(fit, radius, nearest, image, fields=None):
+    f = _marker_fields(fit, radius, image) if fields is None else fields
+    bits = 0 if f['angle_valid'] else 1
     if nearest < 1.85 * radius:
         bits |= 2
-    th = float(theta[0]) if np.isfinite(theta[0]) else np.nan
     return dict(
-        xy_px=xy[0], radius_px=float(radius), theta_rad=th,
-        angle_valid=bool(angle_ok[0]), center_valid=True, confidence=0.5,
-        edge_rmse_px=float(fit['rmse']), marker_offset_px=float(offset[0]),
-        marker_area_px=int(area[0]), neighbor_distance_px=float(nearest),
+        xy_px=f['xy_px'], radius_px=float(radius), theta_rad=f['theta_rad'],
+        angle_valid=f['angle_valid'], center_valid=True, confidence=0.5,
+        edge_rmse_px=float(fit['rmse']), marker_offset_px=f['marker_offset_px'],
+        marker_area_px=f['marker_area_px'], neighbor_distance_px=float(nearest),
         boundary_distance_px=np.nan, quality_bits=np.uint16(bits),
         outside_mask=np.uint8(0), manual_edit=np.uint8(0), recovered=np.uint8(1),
         segment_id=np.int32(-1), previous_detection=np.int64(-1),
         link_valid=False, gap_frames=np.int16(0),
         link_margin_px=np.nan, step_px=np.nan, dtheta_rad=np.nan)
+
+
+def _fit_frame_group(task):
+    """Read one frame once and fit every prediction that lands on it.
+
+    Process-pool unit: top-level so it pickles on Windows. Returns tiny dicts, not
+    images, so the parent never has to ship a 5.7 MB frame between processes.
+    """
+    path, levels, items, radius, params = task
+    image = X.read_image(str(path), levels)
+    out = []
+    for gi, fid, pred in items:
+        fit = fit_local(image, pred, radius, **params)
+        fields = None if fit is None else _marker_fields(fit, radius, image)
+        out.append((gi, fid, fit, fields))
+    return out
 
 
 # --------------------------------------------------------- reference linking
@@ -402,7 +428,7 @@ def _annotate_readme(out_root, record):
 
 def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
                 min_rays=None, max_rmse=None, max_offset=None, min_sep=None,
-                limit=0, force=False, verbose=False, incremental=True):
+                limit=0, force=False, verbose=False, incremental=True, workers=1):
     """Recover missing particles on one case and write a new, re-linked copy."""
     case_dir = R.resolve_case_dir(case_dir)
     out_root = Path(out_root).expanduser().resolve()
@@ -469,10 +495,30 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
     attempts = []
     recovered_rows = []
     n_recovered = 0
-    for gap in gaps:
+    fit_cache = None
+    if int(workers or 1) > 1 and gaps:
+        # Fitting is independent per prediction and the frame files are read-only;
+        # group by frame so each tile is decoded once per worker.
+        groups = {}
+        for gi, gap in enumerate(gaps):
+            for fid in gap['frames']:
+                groups.setdefault(int(fid), []).append((gi, int(fid), predict(gap, fid)))
+        tasks = [(str(files[fid]), levels, items, radius, params)
+                 for fid, items in sorted(groups.items())]
+        fit_cache = {}
+        with ProcessPoolExecutor(max_workers=int(workers)) as pool:
+            for part in pool.map(_fit_frame_group, tasks):
+                for gi, fid, fit, fields in part:
+                    fit_cache[(gi, fid)] = (fit, fields)
+    for gi, gap in enumerate(gaps):
         for fid in gap['frames']:
+            fid = int(fid)
             pred = predict(gap, fid)
-            fit = fit_local(image_for(fid), pred, radius, **params)
+            if fit_cache is not None:
+                fit, fields = fit_cache[(gi, fid)]
+            else:
+                fit = fit_local(image_for(fid), pred, radius, **params)
+                fields = None
             reason = None
             nearest = None
             if fit is None:
@@ -485,7 +531,9 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
                 if nearest < float(params['min_sep']) * radius:
                     reason = 'duplicate centre (%.1f px)' % nearest
             if reason is None:
-                push_row(by_fid[fid], _row_from(fit, radius, nearest, image_for(fid)))
+                push_row(by_fid[fid], _row_from(fit, radius, nearest,
+                                                None if fields is not None else image_for(fid),
+                                                fields))
                 recovered_rows.append({'gap': gap, 'fid': int(fid),
                                        'row': len(by_fid[fid]['xy_px']) - 1})
                 n_recovered += 1
