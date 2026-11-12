@@ -732,6 +732,10 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
     recovery = {'enabled': bool(recover)}
     if recover:
         mask = _load_mask(case_dir)
+        if mask is None:
+            raise FileNotFoundError(
+                '--recover needs the interior mask named by dataset.json; without it '
+                'the frozen discs in the wall band would be re-added as particles')
         rp = dict(RECOVER_DEFAULTS)
         fit_params = params
         radii_all = np.concatenate([np.asarray(rec['radius_px'], float)
