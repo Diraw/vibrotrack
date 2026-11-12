@@ -2,6 +2,10 @@
 
 ## 0.10.0 — 2026-11-12
 
+- Each template can carry its own threshold (`small_template_thresh`). On the
+  labelled 12/14 mm frame, lowering the 12 mm threshold from 0.20 to 0.10 only
+  adds 2 of 487 small discs: the remaining misses have no peak under either
+  template, so the threshold is not the bottleneck.
 - A second template can be matched for the smaller radius class
   (`frame(..., small_template_radius=15.5)`, px in the 0.5x image). The 14 mm
   template only finds a peak on 49.5% of labelled 12 mm discs; a dedicated 12 mm

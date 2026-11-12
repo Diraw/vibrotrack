@@ -83,7 +83,7 @@ def _radius_classes(free_r, explicit=None, min_gap=4.0, min_share=0.05):
     return c
 
 
-def _peaks(im, bbox, thresh, extra_template=None):
+def _peaks(im, bbox, thresh, extra_template=None, extra_thresh=None):
     small = cv2.resize(im, None, fx=.5, fy=.5, interpolation=cv2.INTER_AREA)
     if bbox is not None:
         x0, x1, y0, y1 = bbox
@@ -93,11 +93,14 @@ def _peaks(im, bbox, thresh, extra_template=None):
     else:
         cx0 = cy0 = 0
         sub = small
-    templates = [TEMPLATE] + ([extra_template] if extra_template is not None else [])
+    templates = [(TEMPLATE, float(thresh))]
+    if extra_template is not None:
+        templates.append((extra_template,
+                          float(thresh if extra_thresh is None else extra_thresh)))
     found = []
-    for template in templates:
+    for template, thr in templates:
         score = cv2.matchTemplate(sub.astype(np.float32) / 255, template, cv2.TM_CCOEFF_NORMED)
-        pk = (score == cv2.dilate(score, np.ones((27, 27), np.uint8))) & (score > thresh)
+        pk = (score == cv2.dilate(score, np.ones((27, 27), np.uint8))) & (score > thr)
         yy, xx = np.where(pk)
         if len(yy):
             found.append(np.column_stack((
@@ -202,7 +205,8 @@ def _marker(im, xy):
 
 
 def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=None,
-          prior_xy=None, radii=None, small_template_radius=None, **kw):
+          prior_xy=None, radii=None, small_template_radius=None,
+          small_template_thresh=None, **kw):
     """Detect discs. `search_mask` gates candidate centres (may be dilated);
 
     `interior_mask` (defaults to search_mask) defines `outside_mask` in the output.
@@ -222,7 +226,7 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     interior = search_mask if interior_mask is None else interior_mask
 
     extra = None if small_template_radius is None else         V1.template(float(small_template_radius))
-    xy0, conf0 = _peaks(im, bbox, p['thresh'], extra)
+    xy0, conf0 = _peaks(im, bbox, p['thresh'], extra, small_template_thresh)
     keep = search_mask[np.clip(xy0[:, 1].astype(int), 0, search_mask.shape[0] - 1),
                        np.clip(xy0[:, 0].astype(int), 0, search_mask.shape[1] - 1)] > 0
     xy0, conf0 = xy0[keep], conf0[keep]
