@@ -139,12 +139,26 @@ def shard_task(args):
         # error (case['wall_tol_px']) is allowed for
         avoid_r = float(case.get('particle_radius_px', 36.98)) - float(case.get('wall_tol_px', 6.0))
     elif avoid_r:
+        # Two sources of fixed discs exist: the CAD design (boundary.json) and the
+        # temporal-static ring that the mask proposal records (mask.json). An
+        # empirical mask with frozen_discs had no exclusion before 2026-11-12, so
+        # a few screws survived the static filter and entered the chunk as tracks.
         try:
-            bjson = Path(str(src)).parent / 'boundary.json'
+            parent = Path(str(src)).parent
+            bjson = parent / 'boundary.json'
             if bjson.exists():
-                discs = json.loads(bjson.read_text(encoding='utf8')).get('design_inferred', {}).get('disks_px', [])
+                discs = json.loads(bjson.read_text(encoding='utf8')).get(
+                    'design_inferred', {}).get('disks_px', [])
                 if discs:
                     static_centres = [[d['center_px'][0], d['center_px'][1]] for d in discs]
+            if static_centres is None:
+                mjson = parent / 'mask.json'
+                if mjson.exists():
+                    frozen = json.loads(mjson.read_text(encoding='utf8')).get(
+                        'frozen_discs', [])
+                    if frozen:
+                        static_centres = [[d['center_px'][0], d['center_px'][1]]
+                                          for d in frozen]
         except Exception:
             static_centres = None
     if model == 'geometry':

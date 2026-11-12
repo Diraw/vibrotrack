@@ -20,6 +20,14 @@
   on the three labelled frames 100.0 / 99.9 / 99.9% (was 98.8 / 99.3 / 99.6), with
   no added row farther than 3 px from a label. The two remaining labels are a frozen
   wall disc that the mask removes and a disc already detected 6.6 px away.
+- Empirical masks now pass their `mask.json` frozen discs to the detector as
+  `avoid_r` exclusion points. The mask proposal records the static screws and stuck
+  wall discs, but the 40 px wall dilation filled those bites back, so 1-4 of them per
+  frame survived the static filter and entered the chunk as tracks. With
+  `boundary.avoid_r: 12` the 12/14 mm batch has no apparatus rows left: three-frame
+  precision 2517/2517, recall 2517/2517 under the fixed protocol
+  (`exp/scripts/eval_detection.py`: dedupe labels, drop labels inside a frozen-disc
+  silhouette, match within 0.25 r).
 - `refine` records the recovery counts and parameters in `refine.json`, and
   `dataset.json` carries `n_added`; the pass is off by default, so `--recover` is an
   explicit choice on marker-bearing data.
