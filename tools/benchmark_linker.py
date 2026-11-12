@@ -4,7 +4,12 @@ import copy
 import hashlib
 import json
 import statistics
+import platform
+import subprocess
+import sys
 import time
+import psutil
+import scipy
 from pathlib import Path
 import numpy as np
 from vibrotrack import link2 as L, relink as R
@@ -21,11 +26,35 @@ def fingerprint(frames):
 
 
 def main(args):
+    if Path(args.out).exists():
+        raise FileExistsError(args.out)
+    repo = Path(__file__).resolve().parents[1]
+    process = psutil.Process()
     t = time.perf_counter()
     chunks, grouped, scalars, keys, nf = R._read_case(args.case)
     source = [x for g in grouped for x in g][:args.frames]
     load_s = time.perf_counter() - t
+    input_hash = fingerprint(source)
+    provenance = {
+        'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip(),
+        'dirty': subprocess.check_output(['git', 'status', '--porcelain'], cwd=repo, text=True).strip(),
+        'source_sha256': {str(p.relative_to(repo)): hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in [repo/'src/vibrotrack/link2.py', repo/'src/vibrotrack/relink.py', Path(__file__).resolve()]},
+        'config_sha256': hashlib.sha256((args.case/'run_config.json').read_bytes()).hexdigest(),
+        'input_arrays_sha256': input_hash,
+        'environment': {'platform': platform.platform(), 'python':sys.version,
+                        'numpy':np.__version__, 'scipy':scipy.__version__,
+                        'logical_cpus':psutil.cpu_count(), 'physical_cpus':psutil.cpu_count(logical=False)}}
     fast = L._assign
+    t = time.perf_counter()
+    # Warm both paths on a short genuine prefix without changing source frames.
+    for fn in [L._assign_dense, fast]:
+        L._assign = fn
+        try:
+            R._link_frames(copy.deepcopy(source[:10]), linker='v2', gap=5)
+        finally:
+            L._assign = fast
+    warmup_s = time.perf_counter() - t
     results = []
     expected = None
     for repeat in range(args.repeats):
@@ -47,11 +76,15 @@ def main(args):
             row[label] = {'s': elapsed, 'arrays_sha256': digest, 'stats': stats}
         results.append(row)
     report = {'created_at_unix': time.time(), 'case': str(args.case),
-              'frames': len(source), 'load_s': load_s, 'repeats': results,
+              'frames': len(source), 'load_s': load_s, 'warmup_s': warmup_s,
+              'provenance': provenance, 'repeats': results,
+              'p95_run_s': {label:float(np.percentile([x[label]['s'] for x in results],95))
+                            for label in ['reference','fast']},
+              'memory': process.memory_info()._asdict(),
               'median_reference_s': statistics.median(x['reference']['s'] for x in results),
               'median_fast_s': statistics.median(x['fast']['s'] for x in results),
               'all_arrays_exact': True,
-              'limitations': 'Full-state linking only; excludes copy/load/hash/write timings. Not extraction end-to-end.'}
+              'limitations': 'Full-state linking only; excludes copy/load/hash/write timings. Not extraction end-to-end. p95 is across run timings, not frame latency; Windows peak_wset is entire benchmark process including copies and load.'}
     Path(args.out).write_text(json.dumps(report, indent=2), encoding='utf8')
     print(json.dumps({k:v for k,v in report.items() if k!='repeats'}, indent=2))
 
