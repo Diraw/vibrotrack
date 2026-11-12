@@ -150,6 +150,25 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
                          'r_lo': float(rad_s[last[i]]), 'r_hi': float(rad_s[last[i]]),
                          'frames': [f0 + k], 'kind': 'tail'})
 
+    # Head: a track that starts after the first frame. In a closed cell the particle
+    # was there before the first row; extrapolate backwards from its first velocity.
+    first_frame = min(int(fid) for fid, _rec in frames)
+    for i in np.flatnonzero(first_fid > first_frame):
+        i = int(i)
+        span = int(first_fid[i]) - first_frame
+        if span <= 0 or span > max_gap:
+            continue
+        if not two[i]:
+            continue
+        v = vel[i]
+        xy_start = first_xy[i] - v * span
+        gaps.append({'track': int(uniq[i]), 'f_lo': int(first_fid[i]) - span,
+                     'f_hi': int(first_fid[i]),
+                     'xy_lo': xy_start.copy(), 'xy_hi': first_xy[i].copy(),
+                     'r_lo': float(rad_s[first[i]]), 'r_hi': float(rad_s[first[i]]),
+                     'frames': list(range(int(first_fid[i]) - span, int(first_fid[i]))),
+                     'kind': 'head'})
+
     # Boundary holes: an end and a later start that the linker could not join.
     for i in range(len(uniq)):
         span = first_fid - end_fid[i]

@@ -29,6 +29,11 @@
   the same geometry, so a prior re-finds them and multiplies false positives
   (frame 100: 174 -> 290 small detections for about 173 real discs). The 14 mm
   class may still use priors.
+- `refine` also fills head gaps: a track that starts after the first frame is
+  extrapolated backwards from its first velocity and fitted like any other hole.
+  On the 306-frame recording the first frame goes from 87.9% to 96.5% small-disc
+  recall and 98.1% to 99.7% large-disc recall, matching the 98-99% of the
+  interior frames without manual first-frame editing.
 - `refine` fits each hole at the radius of its two neighbouring detections instead
   of one global median, and `--min-track-length N` drops identities shorter than N
   frames before gap finding. On the 306-frame 12/14 mm recording the radius change
