@@ -1,24 +1,30 @@
 # Changelog
 
 ## 0.10.0 — 2026-11-12
-  - `refine` now fits each hole at the radius of its two neighbouring detections
-    instead of one global median, and `--min-track-length N` drops identities shorter
-    than N frames before gap finding. On the 306-frame 12/14 mm recording the radius
-    change alone cuts refused attempts from 181 to 32 and leaves 0 gap rows; the
-    length filter removes the fragments that pocket fits form (ml=50: 561 rows/frame,
-    889 tracks; ml=100: 455 rows/frame, 536 tracks; about 526 particles).
-
 
 - Multi-radius detection for bidisperse beds. `detect2.frame` now infers one or two
   radius classes from the free-fit radii (1-D k-means, centres at least
   `radius_split_px` apart and the small class at least 5% of the solid peaks), or
   accepts an explicit `radii=[r1, r2]`. Each candidate is fitted at its class
-  radius, the smaller class gets twice the search shift because the 14 mm template
-  does not match a 12 mm disc, and NMS uses the larger of the two radii.
+  radius, the smaller class gets twice the search shift and twice `min_rays`
+  because the 14 mm template does not match a 12 mm disc and a pocket between
+  beads keeps only 18-31 of 64 rays, and NMS uses the larger of the two radii.
   Monodisperse output is unchanged: 300 paired G0 frames reproduce every detection
-  array exactly. On a 306-frame 12/14 mm test recording the small-disc match rate
-  rises from 83/173 to 150/173, but empty pockets between beads still admit false
-  small fits, so the class needs a temporal filter before production use.
+  array exactly.
+- Small-class detections are not seeded from prior positions: pocket fits repeat at
+  the same geometry, so a prior re-finds them and multiplies false positives
+  (frame 100: 174 -> 290 small detections for about 173 real discs). The 14 mm
+  class may still use priors.
+- `refine` fits each hole at the radius of its two neighbouring detections instead
+  of one global median, and `--min-track-length N` drops identities shorter than N
+  frames before gap finding. On the 306-frame 12/14 mm recording the radius change
+  alone cuts refused attempts from 181 to 32 and leaves 0 gap rows; the length
+  filter removes the fragments that pocket fits form (ml=50: 561 rows/frame,
+  889 tracks; ml=100: 455 rows/frame, 536 tracks; about 526 particles).
+- Measured limits on the 306-frame recording: the small-disc match rate rises from
+  83/173 to 150/173, but pocket fits still account for roughly a third of the
+  small-class detections, and the small discs break into about three track
+  fragments each. The class is usable with review, not yet a drop-in default.
 
 ## 0.9.5 — 2026-11-12
 

@@ -204,6 +204,7 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     keep = search_mask[np.clip(xy0[:, 1].astype(int), 0, search_mask.shape[0] - 1),
                        np.clip(xy0[:, 0].astype(int), 0, search_mask.shape[1] - 1)] > 0
     xy0, conf0 = xy0[keep], conf0[keep]
+    n_template = len(xy0)
     n_prior = 0
     if prior_xy is not None and len(prior_xy):
         pr = np.asarray(prior_xy, np.float32).reshape(-1, 2)
@@ -259,6 +260,7 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     xy = xy0 + c.astype(np.float32)
     shift_tol = np.full(len(xy0), float(p['max_shift']))
     min_rays_pt = np.full(len(xy0), float(p['min_rays']))
+    smaller = np.zeros(len(xy0), bool)
     if len(classes) > 1:
         # A 12 mm disc does not match the 14 mm template, so its peak can sit several
         # pixels off centre; allow the smaller class twice the search shift. Its ray
@@ -269,6 +271,14 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
         shift_tol[smaller] = float(p['max_shift']) * 2.0
         min_rays_pt[smaller] = float(p['min_rays']) * 2.0
     ok = (ns >= min_rays_pt) & (rmse < p['r_tol']) & (shift < shift_tol)
+    if len(classes) > 1 and n_prior:
+        # A prior seed for the small class only re-finds the same pocket: pocket fits
+        # are stable frame to frame, so seeding them multiplies false positives
+        # (frame 100: 174 -> 290 small detections). Small discs must come from a
+        # template peak; the 14 mm class may still use priors.
+        prior_only = np.zeros(len(xy0), bool)
+        prior_only[n_template:] = True
+        ok &= ~(smaller & prior_only)
 
     # Fixed apparatus discs are perfect particle look-alikes. A real centre cannot sit closer
     # than 2r to one, so anything inside avoid_r is the disc, not a particle. Filter before the
