@@ -320,3 +320,30 @@ def test_reference_fallback_partial_long_and_boundary_chain(xs, max_gap, inserti
     for (_, actual), (_, expected) in zip(frames, reference):
         for key in actual:
             assert _same(actual[key], expected[key]), key
+
+
+def test_detector_recovery_finds_a_partly_covered_disc():
+    # The template peak dies when a neighbour covers part of the rim, but the disc
+    # still has a clean marker and enough rays for a local fit at a Hough seed.
+    im = _frame([(300, 350), (362, 350)])
+    cv2.circle(im, (330, 350), 30, 220, -1)
+    rows = RF._recover_rows(im, {'xy_px': np.array([[300, 350]], np.float32)},
+                            np.ones(im.shape, bool), [R],
+                            dict(RF.RECOVER_DEFAULTS), dict(RF.DEFAULTS))
+    assert len(rows) == 1
+    fit, r = rows[0]
+    assert abs(float(fit['xy_px'][0]) - 362) < 6
+    assert abs(float(fit['xy_px'][1]) - 350) < 6
+    assert r == R
+
+
+def test_detector_recovery_respects_the_mask():
+    # A seed inside a frozen-disc bite must not produce a row, or every screw in the
+    # wall band would be re-added as a particle.
+    im = _frame([(300, 350), (362, 350)])
+    mask = np.ones(im.shape, np.uint8)
+    cv2.circle(mask, (362, 350), 45, 0, -1)
+    rows = RF._recover_rows(im, {'xy_px': np.array([[300, 350]], np.float32)},
+                            mask.astype(bool), [R], dict(RF.RECOVER_DEFAULTS),
+                            dict(RF.DEFAULTS))
+    assert rows == []

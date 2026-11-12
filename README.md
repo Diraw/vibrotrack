@@ -35,7 +35,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.10.0"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.10.1"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -333,10 +333,13 @@ HDD 上不要开 12 workers，会互相抢 I/O。
 `refine` 在全量 G0 上补 66 个缺口约 49 s；开启 `prior_dedupe` 后缺口变多（约 385 个），
 补回时间相应增加，但最终行数、轨迹数和每帧计数不变。
 
-## 已知限制（v0.10.0）
+## 已知限制（v0.10.1）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。
+- 模板匹配对局部被邻居遮住的颗粒会掉峰；`refine --recover` 用 Hough 种子 + 局部拟合 +
+  暗标记校验补回（2026-11-12 双分散 306 帧：+726 行，三帧召回 99.9–100%，零误增）。
+  需要 `dataset.json` 里有 interior mask，否则不启用。
 - 检测器假设“亮圆盘 + 暗标记”；其他外观需要新增 detector profile。
 - `boundary.model=auto` 只在 mask 同目录存在 `wall_disks.npy` 时走几何壁分支；
   没有就退回经验方差分支。

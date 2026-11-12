@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.10.1 — 2026-11-12
+
+- `refine` head gaps now extrapolate with the velocity at the **start** of the track.
+  The old code reused the tail velocity; on a curved track that put the first-frame
+  prediction 12 px off and the fit was refused even though the disc was there. On
+  the 306-frame 12/14 mm recording this recovered the first frame of three tracks
+  (rows 256,840 -> 256,850) with the same gates.
+
+- `refine --recover`: a detector recovery pass for discs the template stage loses
+  when a neighbour covers part of the rim. Hough circles on the 0.5x image
+  (`param2=10`, radii 14-20 px) seed the candidates; each seed is fitted at both
+  radius classes with the existing fit gates, and a row is added only when the dark
+  marker is valid and the fit is not within `1.6 r` of an existing centre. Seeds
+  inside the frozen-disc bites are dropped by the interior mask, so the screws in
+  the wall band cannot come back as particles. On the 306-frame recording:
+  +726 rows (2.4 per frame), every one in a track of at least 250 frames; per-frame
+  count 839-845 (median 842) against 829-843 (median 840) before; 850 tracks; recall
+  on the three labelled frames 100.0 / 99.9 / 99.9% (was 98.8 / 99.3 / 99.6), with
+  no added row farther than 3 px from a label. The two remaining labels are a frozen
+  wall disc that the mask removes and a disc already detected 6.6 px away.
+- `refine` records the recovery counts and parameters in `refine.json`, and
+  `dataset.json` carries `n_added`; the pass is off by default, so `--recover` is an
+  explicit choice on marker-bearing data.
+
 ## 0.10.0 — 2026-11-12
 
 - `geometry` computes `phi` from per-detection radius classes when the chunk

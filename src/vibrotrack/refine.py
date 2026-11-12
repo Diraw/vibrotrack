@@ -30,7 +30,9 @@ import shutil
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+import cv2
 import numpy as np
+from scipy.spatial import cKDTree
 
 from . import detect as X
 from . import detect2 as D2
@@ -50,6 +52,16 @@ DEFAULTS = dict(
     converge_px=0.5,
     boundary_gate=14.0,   # fragment ends/starts: prediction must land this close
     boundary_growth=4.0,  # extra slack per skipped frame beyond the first
+)
+
+
+RECOVER_DEFAULTS = dict(
+    hough_param2=10.0,     # low bar: the local fit and the marker veto do the filtering
+    hough_min_dist=18.0,
+    hough_radius_min=14.0,  # px in the 0.5x image (12 mm class)
+    hough_radius_max=20.0,  # px in the 0.5x image (14 mm class)
+    recover_seed_sep=0.8,  # skip seeds this close (x mean radius) to a detection
+    recover_bright_min=80.0,
 )
 
 
@@ -117,6 +129,7 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
     first_fid, end_fid = fid_s[first], fid_s[last]
     first_xy, end_xy = xy_s[first], xy_s[last]
     vel = np.zeros((len(uniq), 2), float)
+    head_vel = np.zeros((len(uniq), 2), float)
     two = npts >= 2
     if two.any():
         f1, f0 = fid_s[last[two]], fid_s[last[two] - 1]
@@ -126,6 +139,17 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
         v = np.zeros_like(p1)
         v[good] = (p1[good] - p0[good]) / step[good, None]
         vel[two] = v
+        # The head needs the velocity at the START of the track. Using the tail
+        # velocity extrapolates a curved track backwards along the wrong tangent:
+        # on the 306-frame bidisperse bed this put the frame-0 prediction 12 px off
+        # and the head gap was rejected even though the disc fits at its true spot.
+        hf0, hf1 = fid_s[first[two]], fid_s[first[two] + 1]
+        hp0, hp1 = xy_s[first[two]], xy_s[first[two] + 1]
+        hstep = (hf1 - hf0).astype(float)
+        hgood = hstep > 0
+        hv = np.zeros_like(hp1)
+        hv[hgood] = (hp1[hgood] - hp0[hgood]) / hstep[hgood, None]
+        head_vel[two] = hv
 
     # Tail: a track that stops within max_gap frames of the last frame.  In a closed
     # cell a particle cannot leave, so the last frames are the place where a missed
@@ -160,7 +184,7 @@ def find_gaps(frames, max_gap=5, boundary_gate=14.0, boundary_growth=4.0):
             continue
         if not two[i]:
             continue
-        v = vel[i]
+        v = head_vel[i]
         xy_start = first_xy[i] - v * span
         gaps.append({'track': int(uniq[i]), 'f_lo': int(first_fid[i]) - span,
                      'f_hi': int(first_fid[i]),
@@ -262,6 +286,94 @@ def fit_local(image, predicted, radius, **kw):
             return best
         cur = pos[k][None, :].astype(np.float32)
     return best
+
+
+# --------------------------------------------------------- detector recovery
+
+def _as_uint8(image):
+    arr = np.asarray(image, np.float32)
+    top = float(np.nanmax(arr)) if arr.size else 0.0
+    if top > 255.0:
+        arr = arr * (255.0 / top)
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+def _hough_seeds(image, p):
+    """Circle seeds for discs the template stage lost (partial cover by a neighbour)."""
+    small = cv2.resize(_as_uint8(image), None, fx=.5, fy=.5, interpolation=cv2.INTER_AREA)
+    small = cv2.GaussianBlur(small, (5, 5), 1.2)
+    circles = cv2.HoughCircles(
+        small, cv2.HOUGH_GRADIENT, dp=1, minDist=int(p['hough_min_dist']),
+        param1=50, param2=int(p['hough_param2']),
+        minRadius=int(p['hough_radius_min']), maxRadius=int(p['hough_radius_max']))
+    if circles is None or not len(circles[0]):
+        return np.zeros((0, 2), np.float32)
+    return (np.asarray(circles[0][:, :2], np.float32) * 2.0)
+
+
+def _load_mask(case_dir):
+    """The interior mask named by dataset.json, or None."""
+    p = Path(case_dir) / 'dataset.json'
+    if not p.exists():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding='utf8'))
+    except Exception:
+        return None
+    rel = (d.get('boundary') or {}).get('mask')
+    if not rel:
+        return None
+    mp = Path(rel)
+    if not mp.exists():
+        return None
+    buf = np.fromfile(str(mp), dtype=np.uint8)
+    m = cv2.imdecode(buf, cv2.IMREAD_GRAYSCALE)
+    return None if m is None else (m > 127)
+
+
+def _recover_rows(image, rec, mask, classes, p, params):
+    """Fit extra discs at Hough seeds; the marker veto keeps precision.
+
+    The template stage misses a disc whose rim is partly covered by a neighbour, but
+    the disc still has 20-45 clean rays and a visible dark marker. Hough finds the
+    circle; the local fit and a valid marker supply the precision that the template
+    peak used to give. Seeds inside the frozen-disc bites are dropped by the mask.
+    """
+    seeds = _hough_seeds(image, p)
+    if not len(seeds):
+        return []
+    if mask is not None:
+        xi = np.clip(seeds[:, 0].astype(int), 0, mask.shape[1] - 1)
+        yi = np.clip(seeds[:, 1].astype(int), 0, mask.shape[0] - 1)
+        seeds = seeds[mask[yi, xi]]
+    xy = np.asarray(rec['xy_px'], float).reshape(-1, 2)
+    if len(xy) and len(seeds):
+        dmin, _ = cKDTree(xy).query(seeds)
+        seeds = seeds[dmin > float(p['recover_seed_sep']) * float(np.mean(classes))]
+    rows = []
+    for seed in seeds:
+        best = None
+        for r in classes:
+            fit = fit_local(image, seed, float(r), **params)
+            if fit is None:
+                continue
+            if best is None or fit['rays'] > best[0]['rays']:
+                best = (fit, float(r))
+        if best is None:
+            continue
+        fit, r = best
+        _theta, marker_ok, _off, _area, bright = D2._marker(
+            image, fit['xy_px'][None].astype(np.float32))
+        if not bool(marker_ok[0]) or float(bright[0]) < float(p['recover_bright_min']):
+            continue
+        cur = np.asarray(rec['xy_px'], float).reshape(-1, 2)
+        if len(cur):
+            nearest = float(np.hypot(cur[:, 0] - fit['xy_px'][0],
+                                     cur[:, 1] - fit['xy_px'][1]).min())
+            if nearest < float(params['min_sep']) * r:
+                continue
+        rows.append((fit, r))
+    return rows
 
 
 # ------------------------------------------------------------------------- rows
@@ -454,7 +566,7 @@ def _annotate_readme(out_root, record):
 def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
                 min_rays=None, max_rmse=None, max_offset=None, min_sep=None,
                 limit=0, force=False, verbose=False, incremental=True, workers=1,
-                min_track_length=0):
+                min_track_length=0, recover=False):
     """Recover missing particles on one case and write a new, re-linked copy."""
     case_dir = R.resolve_case_dir(case_dir)
     out_root = Path(out_root).expanduser().resolve()
@@ -617,6 +729,35 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
 
     # Gap metadata supplies fitting seeds, not authoritative identities.
     # Replay the reference state after insertions (EMA changes can propagate).
+    recovery = {'enabled': bool(recover)}
+    if recover:
+        mask = _load_mask(case_dir)
+        rp = dict(RECOVER_DEFAULTS)
+        fit_params = params
+        radii_all = np.concatenate([np.asarray(rec['radius_px'], float)
+                                    for _fid, rec in frames])
+        classes = [float(c) for c in D2._radius_classes(radii_all, None)]
+        if not classes:
+            classes = [float(radius)]
+        added = 0
+        per_frame = []
+        for fid, rec in frames:
+            image = image_for(fid)
+            rows = _recover_rows(image, rec, mask, classes, rp, fit_params)
+            for fit, r in rows:
+                existing = np.asarray(rec['xy_px'], float)
+                nearest = float(np.hypot(existing[:, 0] - fit['xy_px'][0],
+                                         existing[:, 1] - fit['xy_px'][1]).min()) \
+                    if len(existing) else float('inf')
+                if nearest < float(params['min_sep']) * r:
+                    continue
+                push_row(rec, _row_from(fit, r, nearest, image))
+                added += 1
+            if rows:
+                per_frame.append({'frame': int(fid), 'n': len(rows)})
+        recovery.update(n_added=added, classes=classes, params=rp,
+                        frames=per_frame, mask=str(mask is not None))
+
     stats = R._link_frames(frames, linker=linker, gap=link_gap)
     link_mode = 'full'
     link_fallback_reason = ('incremental splice is not reference-equivalent'
@@ -655,6 +796,7 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
         'n_recovered': n_recovered,
         'n_rejected': len(attempts) - n_recovered,
         'attempts': attempts,
+        'recovery': recovery,
         'linker': linker,
         'link_mode': link_mode,
         'link_fallback_reason': link_fallback_reason,
@@ -692,6 +834,8 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
             'n_rejected': len(attempts) - n_recovered,
             'radius_px': float(radius),
             'link_mode': link_mode,
+            'recovery': {'enabled': bool(recover),
+                         'n_added': int(recovery.get('n_added', 0))},
         }
         R._write_json(dataset_path, d)
     return record, seq_out
