@@ -33,7 +33,7 @@ TIFF frames + apparatus.yaml + boundary mask (or `vibrotrack mask`)
 ```bash
 python -m pip install -e .
 # 或者从 GitHub 安装
-python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.7.0"
+python -m pip install "vibrotrack @ git+https://github.com/Diraw/vibrotrack.git@v0.9.3"
 ```
 
 依赖：`numpy`、`scipy`、`opencv-python`、`pillow`、`pyyaml`。Linux 服务器如果报
@@ -102,6 +102,11 @@ vibrotrack extract \
 ```
 
 默认会用最近 5 帧检测结果作为 prior，并在每个 shard 前多检测 5 帧作为 warm-up；这避免 500 帧分片边界丢失上一帧信息。要复现旧行为可用 `--prior-frames 1 --shard-overlap 0`。
+
+5 帧 prior 会把同一个粒子重复喂进径向拟合（检测阶段约 5 倍种子）。`detector.params.prior_dedupe`
+（默认 0 = 不去重）可以去掉模板峰若干像素内已覆盖的 prior 种子：300 真实帧配对实测 6 px 时
+检测 0.365 → 0.171 s/帧，代价是位置中位偏移 0.009 px、约 2% 帧计数 ±1。是否启用由项目决定，
+复核方式见 `tools/benchmark_prior_dedupe.py`。
 
 产物在 `batch/sequences/case01/`：
 
@@ -275,14 +280,14 @@ mask/overlay 的 sha256。字段见 [`docs/MASK.md`](docs/MASK.md)。
 | `fps` | 10 | 实际采集帧率 |
 | `px_per_mm` | 1 | 空间标定；必须写来源 |
 | `particle.diameter_mm` | 1 | 颗粒直径 |
-| `particle.nominal_n` | null | 名义装载数，用于 `phi` |
+| `particle.nominal_n` | null | 本次装载数，只用于 `phi`。**每次实验都会变**，优先用 `geometry --n-particles` 传，不要写死在装置配置里 |
 | `scale_levels` | `[128,28224]` | 16-bit 到 8-bit 的显示范围；其他相机要改 |
 | `boundary.mask` | null | 边界 mask；null = 全帧 |
 | `boundary.model` | auto | `auto`/`geometry`/`empirical`/`off` |
 | `boundary.band` | 1 | 是否搜索 mask 外 40 px 的贴壁颗粒 |
 | `boundary.dilate_px` | 40 | 贴壁搜索带宽度 |
 | `detector.name` | v2 | v1 冻结归档行为，v2 固定半径圆心拟合 |
-| `detector.params` | {} | 透传给 v2：`thresh`、`min_rays`、`min_sep` 等 |
+| `detector.params` | {} | 透传给 v2：`thresh`、`min_rays`、`min_sep`、`prior_dedupe` 等 |
 | `linker.name` | v2 | v2 支持预测、匈牙利分配、补链 |
 | `linker.max_gap` | 5 | 最多补几帧 |
 | `run.workers` | 8 | 并行进程数；HDD 建议 1–4，SSD 可 8–12 |
@@ -314,10 +319,14 @@ vibrotrack extract ... --mask masks/case01/interior_mask.png
 
 ## 性能
 
-原装置 2500×2496、N≈485、12 workers：9000 帧约 190–260 s（取决于磁盘）。检测是
-CPU 密集，链接是单线程但可与检测重叠；HDD 上不要开 12 workers，会互相抢 I/O。
+9001 帧 2400×2400、每帧约 516 个粒子、8 workers、shard 500、SSD/USB 盘：
+检测约 **367 s**（24.5 帧/s），链接约 61 s 且与检测重叠。检测是 CPU 密集，链接是单线程；
+HDD 上不要开 12 workers，会互相抢 I/O。
 
-## 已知限制（v0.7.0）
+`refine` 在全量 G0 上补 66 个缺口约 49 s；开启 `prior_dedupe` 后缺口变多（约 385 个），
+补回时间相应增加，但最终行数、轨迹数和每帧计数不变。
+
+## 已知限制（v0.9.3）
 
 - 面向**稠密**数据（每帧数百颗粒、10 fps）。100 fps 稀疏片段请用单独的 legacy 提取器，
   不在本包内。

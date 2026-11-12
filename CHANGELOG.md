@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased — correctness before performance
+## 0.9.3 — 2026-11-12
+
+- Harden the exact assignment fast path: refuse float32 input, nonfinite or
+  absurd (>1e9 px) coordinates, and any candidate whose distance sits within a
+  numeric margin of the gate; those cases fall back to the dense reference
+  assignment. Pixel-coordinate frames keep the measured 64% linking gain.
+- `tools/benchmark_linker.py` now records the commit, dirty state, source and
+  config hashes, the input-array fingerprint and the measured environment, warms
+  both paths on a genuine prefix, and reports p95 run time plus process memory.
+- Add `tools/benchmark_prior_dedupe.py`: a paired rolling-prior regression that
+  reports detection counts, nearest-neighbour position offsets, angle-valid and
+  quality-bit differences, radius-reference drift and paired frame timings.
+- Document `detector.params.prior_dedupe`: a prior seed already covered by a
+  template peak is redundant, and dropping it removes most of the ~5x seed
+  overdraw. Its default is unchanged (0); projects opt in. On 300 paired real
+  frames at 6 px it ran detection 0.365 -> 0.171 s per frame with a 0.009 px
+  median position shift and 22/300 frames differing by one detection. A full
+  9001-frame run with it still closes to 4,644,516 rows / 516 tracks / 0 gap
+  rows and matches the existing product within 0.041 px median offset.
+- `geometry` now prints a warning instead of silently omitting `n_particles` and
+  `phi` when neither `--n-particles` nor `particle.nominal_n` is set. The load
+  changes per experiment; the config example no longer suggests a fixed value.
 
 - Add an exact unambiguous-assignment fast path: use a conservative spatial
   query, verify distances with the reference np.hypot strict gate, and bypass

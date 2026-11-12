@@ -12,7 +12,9 @@ Example
     px_per_mm: 5.1558
     particle:
       diameter_mm: 14
-      nominal_n: 485
+      # nominal_n is the load of THIS run, not a property of the apparatus:
+      #   nominal_n: 516
+      # Leave it out and pass --n-particles instead; the CLI value wins anyway.
     image:
       width: 2500
       height: 2496

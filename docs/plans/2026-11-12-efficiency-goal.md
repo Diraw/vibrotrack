@@ -28,3 +28,40 @@ The first read-only detector profile shows _marker called twice: candidate photo
 3. Reproduce independent splice findings; add conservative correctness gates/fallback before prioritizing speed.
 4. Expand to 300 sequential frames and paired end-to-end profiling; assess worker/GPU/native/I/O routes.
 5. Commit validated work, record evidence and continue until every acceptance criterion is met or an external blocker is genuine.
+
+## Status 2026-11-12 (v0.9.3)
+
+Criterion 1 (correctness): 82 tests pass; G0 stays 516 x 9001 = 4,644,516 rows,
+516 tracks, 0 gap rows after refine, `accept` and `verify` pass. The withdrawn
+splice is unreachable from the default path and the compatibility entry point
+replays the reference linker.
+
+Criterion 2 (detection): 300 sequential real frames over three windows,
+paired reference/dedupe, median position offset 0.009 px, angle-valid identical.
+`prior_dedupe=6` is a project-level opt-in, not a package default; it is recorded
+as a science-parameter trade-off because 22/300 frames differ by one detection.
+Full 9001-frame run reproduces every per-frame count and the final product
+matches the existing G0 refined product at 0.041 px median offset.
+
+Criterion 3 (link/refine): linking 86.15 -> 32.07 s and complete refine
+104.18 -> 48.99 s over three paired runs, all output arrays equal. The exact
+fast path now diverts float32, huge-coordinate and gate-margin input to the
+dense reference assignment (`ec2d3d7`).
+
+Criterion 4 (performance): paired reports with provenance, warmup, p95 and
+memory in `tools/benchmark_linker.py`; the 63% linking and 53% refine gains
+clear the 20% stage bar. Detection dedupe clears it at the detection stage and
+holds >=10% end-to-end on 120- and 300-frame extraction pairs; full-run
+end-to-end timing is recorded in `data/runs/2026-11-12_efficiency_goal/`.
+
+Criterion 5 (routes): CPU worker scaling is documented (6-8 workers on this
+host; 12 crosses the knee). GPU fixed-fit prototype saves about 2 ms per frame
+with no detector regression, rejected as not worth it. Native/JIT remains an
+open, separate experiment and is not part of this release.
+
+Criterion 6 (reproducibility): tools are checked in; reports live under
+`data/runs/`; raw/frozen data untouched; optional `psutil` use is limited to the
+benchmark tool.
+
+Rejected: local identity splice (EMA/competition counterexamples), marker reuse
+(9.1% paired, below the bar), GPU fixed-fit (about 2 ms, no full regression).

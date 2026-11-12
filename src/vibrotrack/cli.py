@@ -310,6 +310,9 @@ def _cmd_geometry(args):
     mask_path = Path(args.mask).resolve() if args.mask else cfg.boundary_mask
     seed = args.seed_centre or _seed_centre(xy, mask_path)
     n_particles = args.n_particles if args.n_particles is not None else cfg.nominal_n
+    if n_particles is None:
+        print('warning: no --n-particles and no particle.nominal_n in %s; '
+              'geometry will omit n_particles and phi' % args.config, file=sys.stderr)
     rec = G.build(
         args.case_id or case_dir.name, xy, seed, mask_path=mask_path,
         px_per_mm=cfg.px_per_mm, fps=cfg.fps, radius_mm=cfg.radius_mm,
