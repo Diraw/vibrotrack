@@ -150,6 +150,20 @@ function loadImage() {
 // that work takes, so a slow machine reports a number instead of a feeling.
 let rafId = 0;
 let lastPaintMs = 0;
+const frameTimes = [];
+function pushFrameTime() {
+  const now = performance.now();
+  if (frameTimes.length && now - frameTimes[frameTimes.length - 1] > 200) {
+    frameTimes.length = 0;
+  }
+  frameTimes.push(now);
+  if (frameTimes.length > 40) frameTimes.shift();
+}
+function fps() {
+  if (frameTimes.length < 3) return 0;
+  const dt = frameTimes[frameTimes.length - 1] - frameTimes[0];
+  return dt > 0 ? (frameTimes.length - 1) * 1000 / dt : 0;
+}
 
 function render() {
   if (rafId) return;
@@ -159,18 +173,21 @@ function render() {
 function applyTransform() {
   const v = S.view;
   const k = S.img.k || 1;
+  // translate3d forces the frame onto its own composited layer; a plain 2D
+  // transform can be re-rastered on every move on some Windows setups.
   baseCanvas.style.transform =
-    `translate(${v.x}px, ${v.y}px) scale(${v.s / k})`;
+    `translate3d(${v.x}px, ${v.y}px, 0) scale(${v.s / k})`;
 }
 
 function paint() {
   const t0 = performance.now();
+  pushFrameTime();
   applyTransform();
   const cw = stage.clientWidth, ch = stage.clientHeight;
-  let scale = Math.min(window.devicePixelRatio || 1, 1.5);
-  const budget = 2.2e6;
-  if (cw * ch * scale * scale > budget) scale = Math.sqrt(budget / (cw * ch));
-  const bw = Math.max(1, Math.round(cw * scale)), bh = Math.max(1, Math.round(ch * scale));
+  // 1 backing pixel per CSS pixel on purpose: a DPR-scaled canvas is resampled
+  // by the compositor on every frame, which costs more than it looks.
+  const scale = 1;
+  const bw = Math.max(1, Math.round(cw)), bh = Math.max(1, Math.round(ch));
   if (canvas.width !== bw || canvas.height !== bh) {
     canvas.width = bw;
     canvas.height = bh;
@@ -501,7 +518,8 @@ loadImage().then((dim) => {
   setInterval(() => {
     if (!S.img) return;
     $('status').textContent =
-      `${visible().length} 颗 · 绘制 ${lastPaintMs.toFixed(1)} ms · 缩放 ${S.view.s.toFixed(2)}×`;
+      `${visible().length} 颗 · 绘制 ${lastPaintMs.toFixed(1)} ms · ` +
+      `${fps().toFixed(0)} fps · 缩放 ${S.view.s.toFixed(2)}×`;
   }, 800);
 }).catch((err) => setStatus('载入失败：' + err.message));
 </script>
