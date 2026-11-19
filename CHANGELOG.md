@@ -1,3 +1,5 @@
+# Changelog
+
 ## 0.10.7 — 2026-11-19
 
 - `curate` now carries every sidecar of the parent case, `geometry.json`
@@ -12,14 +14,21 @@
   `n_detected_median` from its own chunks (`geometry.refresh_detection_stats`),
   so `geometry.json` cannot contradict the rows it ships with.  `curate`,
   `refine` and `relink` all call it.
+- New `vibrotrack count --image F --out DIR`: one frame in, `count.html` (viewer
+  with hand editing) + `frame.png` + `detections.csv` out.  It runs detector v2,
+  and detects the neighbouring frames in the same folder (default: the 4 before)
+  first, passing their centres as prior seeds - the production trick for a bead
+  squeezed against a neighbour, whose template correlation drops but whose ray
+  fit still locks once seeded.  On `590a10_3` frame 500 (601 particles): 599
+  found, no phantoms, 0.3 px median centre error (588 without priors).
+  Neighbours are found by rebuilding the numbered file name and stat'ing it:
+  listing a 27,000-file folder on the lab NAS took 80 s.
 - `index` refuses a case without `geometry.json`; `--allow-missing-geometry`
   keeps the old warning-only behaviour for exploratory batches.
   `accept`/`verify` now fail when the file is absent, when `index.json` has no
   hash for it, or when that hash changed.  Previously `index` recorded
   `geometry_sha256: null` and `verify` skipped the file, which is the gap that
   let the 2026-11-18 batches freeze without geometry.
-
-# Changelog
 
 ## 0.10.6 — 2026-11-18
 
