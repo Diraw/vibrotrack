@@ -214,7 +214,7 @@ def _marker(im, xy):
 
 def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=None,
           prior_xy=None, radii=None, small_template_radius=None,
-          small_template_thresh=None, **kw):
+          small_template_thresh=None, infer_radii=True, fallback_radii=None, **kw):
     """Detect discs. `search_mask` gates candidate centres (may be dilated);
 
     `interior_mask` (defaults to search_mask) defines `outside_mask` in the output.
@@ -227,6 +227,8 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     correlation drops below `thresh` (measured 0.148 vs 0.20 on the reference dense data), while a fit
     seeded at the true position still returns 40 clean rays and rmse 0.85. The acceptance
     gates are unchanged, so a stale prediction simply fails the fit.
+    Bench presets can disable radius inference (one size) or provide
+    `fallback_radii` when two sizes cannot be inferred from this frame.
     Returns (detection dict, info dict).
     """
     p = dict(DEFAULTS)
@@ -268,8 +270,10 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     broad = (ns1 >= p['solid_ns']) & (rmse1 < 1.8) & (shift1 < 10.0) & \
             (coef[:, 2] > 27) & (coef[:, 2] < 42)
     radius_ref = float(np.median(coef[solid, 2])) if solid.sum() >= 20 else p['radius_fallback']
-    classes = _radius_classes(coef[broad, 2], radii,
-                              min_gap=float(p['radius_split_px']))
+    classes = (_radius_classes(coef[broad, 2], radii, min_gap=float(p['radius_split_px']))
+               if infer_radii else np.array([radius_ref]))
+    if len(classes) < 2 and fallback_radii is not None:
+        classes = _radius_classes([], fallback_radii)
     if len(classes) > 1:
         # Bidisperse: assign each candidate to its nearest free-fit radius class and run
         # the fixed-radius fit per class, so a 12 mm disc is not forced onto a 14 mm rim.

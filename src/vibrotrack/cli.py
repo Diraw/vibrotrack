@@ -154,12 +154,28 @@ def _cmd_count(args):
     cfg = None
     if args.config:
         cfg = load_config(args.config, base_dir=args.base_dir)
+    if not args.image:
+        if args.mode or args.out or args.before or args.after or args.thresh is not None or args.passes:
+            raise SystemExit('这些选项用于 --image；打开速查界面请直接运行 vibrotrack count。')
+        from . import count_app
+        return count_app.run(cfg=cfg, mask_path=args.mask, open_browser=not args.no_open)
+    if args.mode is None and not cfg:
+        raise SystemExit('请指定 --mode mono14 或 --mode bi12-14，或传入自定义 --config。')
     det, image, meta = count_mod.count_image(
         args.image, cfg=cfg, mask_path=args.mask, before=args.before,
-        after=args.after, thresh=args.thresh, passes=args.passes)
+        after=args.after, thresh=args.thresh, passes=args.passes, mode=args.mode)
     out = Path(args.out) if args.out else Path.cwd() / (Path(args.image).stem + '_count')
     html, frame, csv_path = count_mod.write_bundle(out, image, det, meta)
-    print('particles: %d' % meta['n'])
+    print('mode:      %s' % meta['mode_label'])
+    print('particles: %d (automatic; review before use)' % meta['n'])
+    groups = meta['groups']
+    if len(groups) > 1 or args.mode == 'bi12-14':
+        from collections import Counter
+        counts = Counter(row[3] for row in count_mod.grouped_particles(det, meta))
+        for group in groups:
+            print('  %s: %d' % (group['label'], counts[group['id']]))
+        if counts[None]:
+            print('  未分组: %d' % counts[None])
     if meta.get('radius_px'):
         print('radius:    %.2f px (median)' % meta['radius_px'])
     print('prior:     %s' % (', '.join(meta['neighbours']) if meta['neighbours']
@@ -486,23 +502,23 @@ def build_parser():
     p.add_argument('--operator', default=None)
     p.set_defaults(func=_cmd_extract)
 
-    p = sub.add_parser('count', help='count the particles in one image (writes a viewer)')
-    p.add_argument('--image', required=True, help='one TIFF/PNG/JPG frame')
-    p.add_argument('--config', default=None,
-                   help='apparatus YAML: scale levels, detector params. A 12/14 mm '
-                        'mixture needs one with detector.params.small_template_radius, '
-                        'otherwise the small class is mostly missed')
+    p = sub.add_parser('count', help='open the single-image bench tool, or count a file')
+    p.add_argument('--image', help='one TIFF/PNG/JPEG frame; omit to start the local UI')
+    p.add_argument('--mode', choices=tuple(count_mod.MODES), help='mono14 (14 mm) or bi12-14 (12 + 14 mm)')
+    p.add_argument('--config', help='optional apparatus YAML for other camera levels or detector settings')
     p.add_argument('--base-dir', default=None)
     p.add_argument('--mask', default=None, help='interior mask PNG; default: none (whole frame)')
-    p.add_argument('--before', type=int, default=4,
-                   help='preceding frames in the same folder used as prior seeds (default 4)')
+    p.add_argument('--before', type=int, default=0,
+                   help='optional preceding frames used as prior seeds (default 0)')
     p.add_argument('--after', type=int, default=0)
     p.add_argument('--thresh', type=float, default=None,
                    help='template threshold; default from the config or the detector default')
     p.add_argument('--passes', type=int, default=None,
-                   help='detector passes on the target frame (default 1 with priors, 2 without)')
+                   help='detector passes on the target frame (default 1)')
     p.add_argument('--out', default=None, help='output folder (default: ./<frame>_count)')
-    p.add_argument('--open', action='store_true', help='open the viewer when done')
+    opening = p.add_mutually_exclusive_group()
+    opening.add_argument('--open', action='store_true', help='open the generated viewer with --image')
+    opening.add_argument('--no-open', action='store_true', help='print the local UI address without opening it')
     p.set_defaults(func=_cmd_count)
 
     p = sub.add_parser('mask', help='propose a boundary mask from raw frames and write a confirmation overlay')

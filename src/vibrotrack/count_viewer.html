@@ -34,6 +34,15 @@
   #stage { position:relative; min-height:0; overflow:hidden; background:#070b0f; cursor:crosshair; }
   #stage.panning { cursor:grabbing; }
   #canvas { display:block; width:100%; height:100%; }
+  [hidden] { display:none !important; }
+  select { font:inherit; color:var(--fg); background:var(--panel); padding:6px; border:1px solid #52708e; border-radius:6px; }
+  #empty { position:absolute; inset:0; display:grid; place-items:center; text-align:center; padding:24px; color:var(--muted); pointer-events:none; }
+  #stage.dropping { outline:2px dashed #39d5ff; outline-offset:-5px; }
+  #groups { display:grid; gap:4px; }
+  #groups div { display:flex; justify-content:space-between; gap:8px; }
+  #filename { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #status { overflow-wrap:anywhere; }
+  #workflow { background:#194638; border-color:#35866b; }
 
   aside { border-left:1px solid var(--line); background:var(--panel); padding:12px 14px;
           overflow:auto; display:flex; flex-direction:column; gap:10px; }
@@ -54,48 +63,62 @@
 </head>
 <body>
 <header>
-  <h1>颗粒速查 <span class="tag">单图计数 · 检测器 = vibrotrack v2</span></h1>
-  <p class="hint">这张图的圆是 <b>vibrotrack detector v2</b> 算出来的（同目录相邻帧作先验）。
-    左键点空白加一颗、右键点颗粒删一颗，<kbd>Ctrl+Z</kbd> 撤销；滚轮缩放、拖拽平移。
-    速查用，不进归档数据。</p>
+  <h1>颗粒速查 <span class="tag">单张识别 · 本机运行</span></h1>
+  <p class="hint">vibrotrack v2 自动计数，校对后可导出标注图；结果不用于正式归档。</p>
 </header>
 
+<div class="bar" id="inputBar" hidden>
+  <label>粒径模式 <select id="sizeMode">
+    <option value="">请选择</option>
+    <option value="mono14">14 mm 单分散</option>
+    <option value="bi12-14">12 + 14 mm 双分散</option>
+  </select></label>
+  <input id="file" type="file" accept=".tif,.tiff,.png,.jpg,.jpeg" hidden>
+  <button id="workflow">打开图片</button>
+  <button id="retry" disabled>按当前模式重算</button>
+  <span id="filename" class="muted small"></span>
+</div>
 <div class="bar">
   <button id="modeView" class="mode active">浏览</button>
-  <button id="modeAdd" class="mode">加</button>
+  <button id="modeAdd" class="mode">加颗粒</button>
+  <label id="addGroupBox" hidden>补点粒径 <select id="addGroup" aria-label="补点粒径"></select></label>
   <button id="undo" disabled>撤销</button>
   <button id="clearManual" disabled>清空手改</button>
   <button id="exportPng" disabled>导出标注图</button>
-  <span id="status">载入中…</span>
+  <span id="status" role="status">载入中…</span>
 </div>
 
 <main>
-  <div id="stage"><canvas id="canvas"></canvas></div>
+  <div id="stage"><canvas id="canvas"></canvas><div id="empty">先选粒径，再把一张 TIFF、PNG 或 JPG 拖到这里</div></div>
   <aside>
     <div class="count"><span id="count">—</span><small>颗</small></div>
     <div id="breakdown" class="muted small">—</div>
+    <div id="groups" aria-label="分组计数"></div>
     <canvas id="hist" width="224" height="84"></canvas>
     <div id="radiusInfo" class="muted small">半径分布</div>
     <dl>
+      <dt>结果模式</dt><dd id="infoMode">—</dd>
       <dt>图片</dt><dd id="infoSize">—</dd>
       <dt>先验</dt><dd id="infoPrior">—</dd>
       <dt>耗时</dt><dd id="infoTime">—</dd>
     </dl>
     <div class="help">
       <b>怎么用</b><br>
-      1. 数字是人眼校对前的自动结果；<b>左键</b>加、<b>右键</b>删。<br>
+      1. 点「加颗粒」后左键补点；右键删除，滚轮缩放、拖拽平移。<br>
       2. <kbd>Ctrl+Z</kbd> 撤销，<kbd>F</kbd> 复位视图，<kbd>A</kbd> 切到加一颗。<br>
       3. 「导出标注图」写出带圈和最终数量的 PNG。<br>
-      4. 缺颗多发生在被邻居挤住的颗粒上；想更准就重跑
-      <code>vibrotrack count</code> 并把相邻帧放在同一目录。<br>
-      5. 同一批数据的正式口径仍是 <code>extract → geometry → index → accept → verify</code>。
+      双分散补点前可以选大或小；拿不准就保留为「未分组」。<br>
+      贴壁、遮挡或打光不均时可能漏检，请以人工核对为准。
     </div>
   </aside>
 </main>
 
 <script>
 'use strict';
-const DATA = /*__DATA__*/;
+const INITIAL = /*__DATA__*/;
+const app = INITIAL === null;
+let DATA = INITIAL;
+const palette = ['#f6be65', '#39d5ff'];
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('canvas');
@@ -109,7 +132,7 @@ const histCanvas = $('hist');
 const histCtx = histCanvas.getContext('2d');
 
 const S = {
-  img: null, particles: [], adds: [], ops: [],
+  img: null, particles: [], adds: [], ops: [], busy: false, exporting: false,
   view: { s: 1, x: 0, y: 0 }, mode: 'view', hover: null,
 };
 let drag = null;
@@ -118,57 +141,44 @@ function visible() { return S.particles.filter((p) => !p.removed); }
 function setStatus(text) { $('status').textContent = text; }
 
 // ---------- image ----------
-function loadImage() {
+function decodeDisplay(url) {
   return new Promise((resolve, reject) => {
     const im = new Image();
-    im.onload = () => {
-      srcImage = im;
-      // Geometry is in original-image pixels (the detections are); the display
-      // copy only changes how many source pixels one image pixel covers.
-      const W = DATA.width, H = DATA.height;
-      resolve({ w: W, h: H, k: im.naturalWidth / W });
-    };
+    im.onload = () => resolve(im);
     im.onerror = () => reject(new Error('图片载入失败'));
-    im.src = DATA.image;
+    im.src = url;
   });
 }
 
-function loadFull() {
-  if (!DATA.full || DATA.full === DATA.image) {
-    fullImage = srcImage;
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    const im = new Image();
-    im.onload = () => { fullImage = im; resolve(); };
-    im.onerror = () => { fullImage = srcImage; resolve(); };
-    im.src = DATA.full;
-  });
+async function showResult(data) {
+  const image = await decodeDisplay(data.image);
+  DATA = data;
+  srcImage = image;
+  fullImage = null;
+  S.img = { w: data.width, h: data.height,
+            kx: image.naturalWidth / data.width, ky: image.naturalHeight / data.height };
+  S.particles = data.particles.map(([x, y, r, group = null]) => ({ x, y, r, group, src:'auto', removed:false }));
+  drag = null;
+  stage.classList.remove('panning');
+  S.adds = []; S.ops = []; S.hover = null;
+  const select = $('addGroup');
+  select.replaceChildren(...data.meta.groups.map(g => new Option(g.label, g.id)), new Option('未分组', ''));
+  select.value = data.meta.groups.length === 1 ? String(data.meta.groups[0].id) : '';
+  setMode('view');
+  fitView();
+  updateUI();
+  setStatus('识别完成 · 请核对颗粒位置');
+}
+
+function groupColor(p) {
+  if ((DATA?.meta.groups.length || 0) > 1) return palette[p.group] || '#cdd7df';
+  return p.src === 'manual' ? '#39d5ff' : '#20d67a';
 }
 
 // ---------- render ----------
-// One canvas at 1 backing pixel per CSS pixel, repainted per frame from a
-// <=1600 px copy: the same shape the review editor uses, and the only shape that
-// stayed above 50 fps here.  (A CSS-transformed image layer measured 0.2 ms of
-// JS but 20 fps, because compositing the scaled layer is the expensive part.)
+// Retain the accepted render path: decoded <=1200 px copy, one 1:1 canvas,
+// original-image coordinates for hit testing and export.
 let rafId = 0;
-let lastPaintMs = 0;
-const frameTimes = [];
-
-function pushFrameTime() {
-  const now = performance.now();
-  if (frameTimes.length && now - frameTimes[frameTimes.length - 1] > 200) {
-    frameTimes.length = 0;
-  }
-  frameTimes.push(now);
-  if (frameTimes.length > 40) frameTimes.shift();
-}
-
-function fps() {
-  if (frameTimes.length < 3) return 0;
-  const dt = frameTimes[frameTimes.length - 1] - frameTimes[0];
-  return dt > 0 ? (frameTimes.length - 1) * 1000 / dt : 0;
-}
 
 function render() {
   if (rafId) return;
@@ -176,8 +186,6 @@ function render() {
 }
 
 function paint() {
-  const t0 = performance.now();
-  pushFrameTime();
   const cw = stage.clientWidth, ch = stage.clientHeight;
   if (canvas.width !== cw || canvas.height !== ch) {
     canvas.width = cw;
@@ -186,7 +194,7 @@ function paint() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#070b0f';
   ctx.fillRect(0, 0, cw, ch);
-  if (!S.img) { lastPaintMs = performance.now() - t0; return; }
+  if (!S.img) return;
 
   const v = S.view;
   const W = S.img.w, H = S.img.h;
@@ -195,10 +203,10 @@ function paint() {
   if (sx1 > sx0 && sy1 > sy0) {
     // Smooth only while shrinking; when enlarged, nearest-neighbour is sharper
     // on the rims and far cheaper per pixel.
-    ctx.imageSmoothingEnabled = v.s <= 1;
-    const k = S.img.k || 1;
+    const { kx, ky } = S.img;
+    ctx.imageSmoothingEnabled = v.s <= kx;
     ctx.drawImage(srcImage,
-                  sx0 * k, sy0 * k, (sx1 - sx0) * k, (sy1 - sy0) * k,
+                  sx0 * kx, sy0 * ky, (sx1 - sx0) * kx, (sy1 - sy0) * ky,
                   v.x + sx0 * v.s, v.y + sy0 * v.s,
                   (sx1 - sx0) * v.s, (sy1 - sy0) * v.s);
 
@@ -208,25 +216,18 @@ function paint() {
                              p.y + p.r < vis0y || p.y - p.r > vis1y);
     ctx.lineWidth = 1.4;
 
-    ctx.beginPath();
-    for (const p of S.particles) {
-      if (p.removed || p.src === 'manual' || !visible(p)) continue;
-      const x = v.x + p.x * v.s, y = v.y + p.y * v.s, r = Math.max(2, p.r * v.s);
-      ctx.moveTo(x + r, y);
-      ctx.arc(x, y, r, 0, Math.PI * 2);
+    const colors = DATA.meta.groups.length > 1 ? [...palette, '#cdd7df'] : ['#20d67a', '#39d5ff'];
+    for (const color of colors) {
+      ctx.beginPath();
+      for (const p of S.particles) {
+        if (p.removed || groupColor(p) !== color || !visible(p)) continue;
+        const x = v.x + p.x * v.s, y = v.y + p.y * v.s, r = Math.max(2, p.r * v.s);
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+      }
+      ctx.strokeStyle = color;
+      ctx.stroke();
     }
-    ctx.strokeStyle = 'rgba(32,214,122,0.95)';
-    ctx.stroke();
-
-    ctx.beginPath();
-    for (const p of S.particles) {
-      if (p.removed || p.src !== 'manual' || !visible(p)) continue;
-      const x = v.x + p.x * v.s, y = v.y + p.y * v.s, r = Math.max(2, p.r * v.s);
-      ctx.moveTo(x + r, y);
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-    }
-    ctx.strokeStyle = '#39d5ff';
-    ctx.stroke();
 
     ctx.beginPath();
     for (const p of S.particles) {
@@ -251,7 +252,6 @@ function paint() {
       ctx.stroke();
     }
   }
-  lastPaintMs = performance.now() - t0;
 }
 
 function drawHist() {
@@ -275,6 +275,14 @@ function drawHist() {
   }
 }
 
+function groupTotals(vis) {
+  if (!DATA || (DATA.meta.groups.length < 2 && DATA.meta.mode !== 'bi12-14')) return [];
+  const totals = DATA.meta.groups.map(g => ({...g, n:vis.filter(p => p.group === g.id).length}));
+  const n = vis.filter(p => p.group === null).length;
+  if (n || !totals.length) totals.push({id:null, label:'未分组', n});
+  return totals;
+}
+
 function updateUI() {
   const vis = visible();
   const nAuto = vis.filter((p) => p.src !== 'manual').length;
@@ -293,9 +301,25 @@ function updateUI() {
   drawHist();
   $('undo').disabled = !S.ops.length;
   $('clearManual').disabled = !S.adds.length && !S.particles.some((p) => p.removed);
-  $('exportPng').disabled = !S.img;
-  $('modeView').disabled = $('modeAdd').disabled = !S.img;
-  const m = DATA.meta;
+  $('exportPng').disabled = !S.img || S.busy || S.exporting;
+  $('modeView').disabled = $('modeAdd').disabled = !S.img || S.busy;
+  $('undo').disabled ||= S.busy || S.exporting;
+  $('clearManual').disabled ||= S.busy || S.exporting;
+  $('empty').hidden = !!S.img;
+  $('addGroupBox').hidden = S.mode !== 'add' || (DATA?.meta.groups.length || 0) < 2;
+  const summary = groupTotals(vis).map(g => {
+    const row = document.createElement('div');
+    const label = document.createElement('span');
+    const n = document.createElement('strong');
+    label.textContent = g.label;
+    label.style.color = palette[g.id] || '#cdd7df';
+    n.textContent = g.n;
+    row.append(label, n);
+    return row;
+  });
+  $('groups').replaceChildren(...summary);
+  const m = DATA?.meta;
+  $('infoMode').textContent = m?.mode_label || '—';
   $('infoSize').textContent = m ? `${m.width}×${m.height}` : '—';
   $('infoPrior').textContent = m ? (m.neighbours.length ? `${m.neighbours.length} 帧` : '无（单张）') : '—';
   $('infoTime').textContent = m && m.ms ? `${m.ms} ms` : '—';
@@ -340,10 +364,11 @@ function pick(pt) {
 
 // ---------- edit ----------
 function addAt(ix, iy) {
-  const vis = visible();
-  const rs = vis.map((p) => p.r).sort((a, b) => a - b);
-  const r = rs.length ? rs[(rs.length / 2) | 0] : (DATA.meta.radius_px || 20);
-  const item = { x: ix, y: iy, r, src: 'manual', removed: false };
+  if (ix < 0 || iy < 0 || ix >= S.img.w || iy >= S.img.h) return;
+  const groups = DATA.meta.groups;
+  const g = groups.length === 1 ? groups[0] : groups.find(g => String(g.id) === $('addGroup').value);
+  const r = g?.radius || DATA.meta.radius_px || 20;
+  const item = { x: ix, y: iy, r, group: g?.id ?? null, src: 'manual', removed: false };
   S.adds.push(item);
   S.particles.push(item);
   S.ops.push(() => {
@@ -357,6 +382,7 @@ function addAt(ix, iy) {
 }
 
 function removeAt(p) {
+  S.hover = null;
   if (p.src === 'manual') {
     const i = S.particles.indexOf(p);
     if (i < 0) return;
@@ -376,12 +402,15 @@ function undo() {
   const fn = S.ops.pop();
   if (!fn) return;
   fn();
+  S.hover = null;
   updateUI();
   render();
 }
 
 function clearManual() {
-  S.particles = S.particles.filter((p) => p.src !== 'manual' && !p.removed);
+  S.particles = S.particles.filter(p => p.src !== 'manual');
+  for (const p of S.particles) p.removed = false;
+  S.hover = null;
   S.adds = [];
   S.ops = [];
   updateUI();
@@ -389,8 +418,23 @@ function clearManual() {
 }
 
 // ---------- export ----------
-function exportPng() {
-  if (!S.img) return;
+async function exportPng() {
+  if (!S.img || S.busy || S.exporting) return;
+  S.exporting = true;
+  updateControls();
+  try {
+    if (!fullImage) fullImage = DATA.full ? await decodeDisplay(DATA.full) : srcImage;
+    await downloadPng();
+    setStatus('已生成标注 PNG');
+  } catch (err) {
+    setStatus('导出失败：' + err.message);
+  } finally {
+    S.exporting = false;
+    updateControls();
+  }
+}
+
+async function downloadPng() {
   const w = S.img.w, h = S.img.h;
   const c = document.createElement('canvas');
   c.width = w;
@@ -403,12 +447,12 @@ function exportPng() {
   for (const p of vis) {
     g.beginPath();
     g.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-    g.strokeStyle = p.src === 'manual' ? '#39d5ff' : '#20d67a';
+    g.strokeStyle = groupColor(p);
     g.lineWidth = lw;
     g.stroke();
   }
-  const nRem = S.particles.filter((p) => p.removed).length;
-  const label = `${vis.length} particles` + (nRem ? `  (-${nRem})` : '');
+  const counts = groupTotals(vis).map(g => `${g.label} ${g.n}`).join(' / ');
+  const label = `总数 ${vis.length}  ·  ${DATA.meta.mode_label || '自定义'}` + (counts ? `  ·  ${counts}` : '');
   const fs = Math.max(22, Math.round(w / 45));
   const pad = Math.round(fs * 0.45);
   g.font = `600 ${fs}px system-ui, "Microsoft YaHei", sans-serif`;
@@ -416,8 +460,8 @@ function exportPng() {
   g.fillStyle = 'rgba(8,12,16,0.72)';
   g.fillRect(0, 0, tw + pad * 2, Math.round(fs * 1.65));
   g.fillStyle = '#e8eef5';
-  g.fillText(label, pad, Math.round(fs * 1.18));
-  const name = (DATA.meta.image || '').split(/[\\/]/).pop();
+  g.fillText(label, pad, Math.round(fs * 1.18), Math.max(1, w - 2 * pad));
+  const name = (DATA.meta.image || 'image').split(/[\\/]/).pop();
   const foot = `${name} · ${new Date().toLocaleString()}`;
   g.font = `400 ${Math.max(14, Math.round(fs * 0.5))}px system-ui, sans-serif`;
   const fw = g.measureText(foot).width;
@@ -426,13 +470,13 @@ function exportPng() {
   g.fillRect(0, h - fh, fw + pad * 2, fh);
   g.fillStyle = '#cfe4f5';
   g.fillText(foot, pad, h - Math.round(fh * 0.3));
-  c.toBlob((blob) => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${name.replace(/\.[^.]+$/, '')}_count${vis.length}.png`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-  }, 'image/png');
+  const blob = await new Promise(resolve => c.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('浏览器未能生成 PNG');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name.replace(/\.[^.]+$/, '')}_count${vis.length}.png`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
 // ---------- wiring ----------
@@ -441,6 +485,7 @@ function setMode(mode) {
   $('modeView').classList.toggle('active', mode === 'view');
   $('modeAdd').classList.toggle('active', mode === 'add');
   stage.style.cursor = mode === 'add' ? 'copy' : 'crosshair';
+  $('addGroupBox').hidden = mode !== 'add' || (DATA?.meta.groups.length || 0) < 2;
 }
 
 $('modeView').addEventListener('click', () => setMode('view'));
@@ -450,7 +495,7 @@ $('clearManual').addEventListener('click', clearManual);
 $('exportPng').addEventListener('click', exportPng);
 
 stage.addEventListener('mousedown', (ev) => {
-  if (!S.img) return;
+  if (!S.img || S.busy || S.exporting) return;
   if (ev.button === 2) {
     const p = pick(toImage(ev));
     if (p) removeAt(p);
@@ -494,12 +539,12 @@ stage.addEventListener('wheel', (ev) => {
   if (!S.img) return;
   ev.preventDefault();
   const r = stage.getBoundingClientRect();
-  zoomAt(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-ev.deltaY * 0.0015));
+  zoomAt(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0015)));
 }, { passive: false });
 
 window.addEventListener('keydown', (ev) => {
   const tag = ev.target && ev.target.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (S.busy || S.exporting || ['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
   else if (ev.key === 'f') fitView();
   else if (ev.key === 'a') setMode('add');
@@ -508,21 +553,71 @@ window.addEventListener('keydown', (ev) => {
 
 window.addEventListener('resize', render);
 
-loadImage().then((dim) => loadFull().then(() => dim)).then((dim) => {
-  S.img = dim;
-  S.particles = DATA.particles.map(([x, y, r]) => ({ x, y, r, src: 'auto', removed: false }));
-  setMode('view');
-  fitView();
+let selectedFile = null;
+function updateControls() {
   updateUI();
-  setStatus(`${DATA.meta.n} 颗 · 检测 ${DATA.meta.ms} ms` +
-            (DATA.meta.neighbours.length ? ` · 先验 ${DATA.meta.neighbours.length} 帧` : ''));
-  setInterval(() => {
-    if (!S.img) return;
-    $('status').textContent =
-      `${visible().length} 颗 · 绘制 ${lastPaintMs.toFixed(1)} ms · ` +
-      `${fps().toFixed(0)} fps · 缩放 ${S.view.s.toFixed(2)}×`;
-  }, 800);
-}).catch((err) => setStatus('载入失败：' + err.message));
+  if (!app) return;
+  const locked = S.busy || S.exporting;
+  const selected = !!$('sizeMode').value;
+  $('sizeMode').disabled = locked;
+  $('workflow').disabled = !selected || locked;
+  $('retry').disabled = !selectedFile || !selected || locked;
+  $('filename').textContent = selectedFile?.name || '';
+  $('filename').title = $('filename').textContent;
+}
+
+async function detectFile(file) {
+  if (!file || S.busy || S.exporting) return;
+  const mode = $('sizeMode').value;
+  if (!mode) { setStatus('请先选择粒径模式'); return; }
+  if (file.size > 64 * 1024 * 1024) { setStatus('图片超过 64 MiB'); return; }
+  if (S.ops.length && !window.confirm('检测成功后将替换当前结果和手改，继续？')) return;
+  selectedFile = file;
+  S.busy = true;
+  updateControls();
+  setStatus(`正在检测 ${file.name}…`);
+  try {
+    const query = new URLSearchParams({mode, name:file.name});
+    const resp = await fetch(`/detect?${query}`, {
+      method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file,
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '检测失败');
+    await showResult(data);
+  } catch (err) {
+    setStatus(`未生成新结果：${err.message}` + (S.img ? '；仍显示上一张结果' : ''));
+  } finally {
+    S.busy = false;
+    updateControls();
+  }
+}
+
+if (app) {
+  $('inputBar').hidden = false;
+  $('workflow').onclick = () => $('file').click();
+  $('retry').onclick = () => detectFile(selectedFile);
+  $('sizeMode').onchange = () => {
+    updateControls();
+    if (DATA && DATA.meta.mode !== $('sizeMode').value) setStatus('模式已切换；按「重算」才会更新当前结果');
+  };
+  $('file').onchange = ev => { detectFile(ev.target.files[0]); ev.target.value = ''; };
+  window.addEventListener('dragover', ev => ev.preventDefault());
+  window.addEventListener('drop', ev => ev.preventDefault());
+  stage.addEventListener('dragover', ev => { ev.preventDefault(); stage.classList.add('dropping'); });
+  stage.addEventListener('dragleave', () => stage.classList.remove('dropping'));
+  stage.addEventListener('drop', ev => {
+    ev.preventDefault();
+    stage.classList.remove('dropping');
+    const files = ev.dataTransfer.files;
+    if (files.length !== 1) { setStatus('请一次只拖入一张图片'); return; }
+    detectFile(files[0]);
+  });
+  updateControls();
+  setStatus('请选择粒径模式');
+} else {
+  updateControls();
+  showResult(INITIAL).catch(err => setStatus('载入失败：' + err.message));
+}
 </script>
 </body>
 </html>
