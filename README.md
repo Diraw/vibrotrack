@@ -268,6 +268,21 @@ vibrotrack count   --image path/to/Basler_..._0500.tiff   --out bench/0500   --o
 可选 `--mask`（内壁掩膜，排除冻结螺钉）与 `--config`（apparatus YAML，取标定与
 检测参数）；`--before/--after` 控制用几帧做先验，`--thresh` 覆盖模板阈值。
 
+**多分散**：拟合阶段本来就会按自由半径自动分成 1–2 类、逐类做固定半径拟合，每颗
+输出自己的半径；但**模板阶段默认只有一个 14 mm 模板**。12/14 mm 混合床必须给带
+`detector.params.small_template_radius` 的 config，否则小颗粒几乎全漏。实测同一帧
+（2026-11-12 双分散批，人工标注 847 颗）：
+
+| 命令 | 数量 |
+|---|---:|
+| 不给 config | 541（只剩大颗粒）|
+| `--config configs/apparatus_bidisperse.yaml` | 783 |
+| 同上 + `--before 10` | 827 |
+| 同上 + `--before 20` | 832 |
+
+该批最终成品是 847（306 帧链接 + `refine --recover` 补被遮挡的小颗粒）；单图速查
+到 830 左右已经是「人工补十几颗」的量级。
+
 这是台面速查工具，不写归档；正式口径仍是
 `extract → geometry → index → accept → verify`。
 

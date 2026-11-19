@@ -488,7 +488,10 @@ def build_parser():
 
     p = sub.add_parser('count', help='count the particles in one image (writes a viewer)')
     p.add_argument('--image', required=True, help='one TIFF/PNG/JPG frame')
-    p.add_argument('--config', default=None, help='apparatus YAML (scale levels, detector params)')
+    p.add_argument('--config', default=None,
+                   help='apparatus YAML: scale levels, detector params. A 12/14 mm '
+                        'mixture needs one with detector.params.small_template_radius, '
+                        'otherwise the small class is mostly missed')
     p.add_argument('--base-dir', default=None)
     p.add_argument('--mask', default=None, help='interior mask PNG; default: none (whole frame)')
     p.add_argument('--before', type=int, default=4,
