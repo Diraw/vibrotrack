@@ -42,7 +42,7 @@ def _chunk(seq_dir):
     return files[0]
 
 
-def build_index(batch_dir, gate=None):
+def build_index(batch_dir, gate=None, allow_missing_geometry=False):
     batch_dir = Path(batch_dir).resolve()
     seq_root = batch_dir / 'sequences'
     if not seq_root.is_dir():
@@ -114,6 +114,12 @@ def build_index(batch_dir, gate=None):
             rec['geometry_sha256'] = None
             rec['geometry'] = None
             rec['geometry_warning'] = 'geometry.json missing; run `vibrotrack geometry`'
+            if not allow_missing_geometry:
+                raise FileNotFoundError(
+                    'missing geometry.json in %s; run `vibrotrack geometry --case-dir %s '
+                    '--config <apparatus.yaml>` before indexing, or pass '
+                    '--allow-missing-geometry for an exploratory batch'
+                    % (seq_dir, seq_dir))
         cfg_path = seq_dir / 'run_config.json'
         rec['run_config_sha256'] = schema.sha256(cfg_path) if cfg_path.exists() else None
         rec['status'] = 'ok'
@@ -203,6 +209,15 @@ def _check_sequence(batch_dir, rec, gate):
                         % (rec.get('frames_covered'), rec.get('frames_expected')))
     if rec.get('npz_sha256') and schema.sha256(npz_path) != rec['npz_sha256']:
         problems.append('npz sha256 does not match index')
+    geom_path = seq_dir / 'geometry.json'
+    if not geom_path.exists():
+        problems.append('missing geometry.json')
+    elif rec.get('geometry_sha256') is None:
+        # The index was built when the file was absent, so nothing tied the
+        # batch to a wall radius or a phi.  Re-index, do not guess.
+        problems.append('geometry.json is not in index.json; re-run `vibrotrack index`')
+    elif schema.sha256(geom_path) != rec['geometry_sha256']:
+        problems.append('geometry sha256 does not match index')
 
     return {
         'sequence': rec['sequence'],
@@ -243,6 +258,7 @@ def accept(batch_dir, min_center=None, min_angle=None):
                 'segment frame indices strictly increasing',
                 'frames_covered equals frames_expected',
                 'npz sha256 matches index.json',
+                'geometry.json present and its sha256 matches index.json',
             ],
         },
         'n_checked': len(results),
@@ -264,7 +280,6 @@ def verify(batch_dir):
         seq_dir = batch_dir / 'sequences' / rec['sequence']
         checks = [
             ('npz_sha256', rec.get('npz_file')),
-            ('geometry_sha256', 'geometry.json'),
             ('summary_sha256', 'full_summary.json'),
             ('run_config_sha256', 'run_config.json'),
             ('dataset_sha256', 'dataset.json'),

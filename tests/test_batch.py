@@ -1,0 +1,106 @@
+"""Batch gates: geometry.json is a product, not an optional extra.
+
+The 2026-11-19 incident: index.json recorded ``geometry_sha256 = null`` for a
+batch whose geometry had been dropped by curate, so accept and verify had
+nothing to compare and the batch froze without a wall radius or a phi.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+
+from vibrotrack import batch
+
+
+def _write_case(batch_dir, name='syn', counts=(2, 1)):
+    case = Path(batch_dir) / 'sequences' / name
+    case.mkdir(parents=True)
+    n = sum(counts)
+    fields = {
+        'xy_px': np.asarray([[10.0 + 20 * i, 10.0] for i in range(n)], np.float32),
+        'radius_px': np.full(n, 5.0, np.float32),
+        'theta_rad': np.full(n, 0.3, np.float32),
+        'center_valid': np.ones(n, bool),
+        'angle_valid': np.ones(n, bool),
+        'confidence': np.full(n, 0.8, np.float32),
+        'edge_rmse_px': np.full(n, 0.5, np.float32),
+        'marker_offset_px': np.full(n, 11.0, np.float32),
+        'marker_area_px': np.full(n, 210.0, np.float32),
+        'neighbor_distance_px': np.full(n, 40.0, np.float32),
+        'boundary_distance_px': np.full(n, 100.0, np.float32),
+        'quality_bits': np.zeros(n, np.uint16),
+        'segment_id': np.arange(n, dtype=np.int32),
+        'previous_detection': np.full(n, -1, np.int64),
+        'link_valid': np.zeros(n, bool),
+        'step_px': np.full(n, np.nan, np.float32),
+        'dtheta_rad': np.full(n, np.nan, np.float32),
+        'frame_ids': np.arange(len(counts), dtype=np.int64),
+        'frame_offsets': np.concatenate([[0], np.cumsum(counts)]).astype(np.int32),
+        'schema_version': np.asarray('chunk/v1'),
+    }
+    np.savez(case / 'chunk_00000_00001.npz', **fields)
+    (case / 'dataset.json').write_text(json.dumps({
+        'schema_version': 'dataset/v1',
+        'case': name,
+        'n_frames': len(counts),
+        'image': {'width': 60, 'height': 60, 'dtype': 'uint8'},
+        'qc': {'status': 'extracted'},
+        'outputs': [],
+    }), encoding='utf8')
+    (case / 'run_config.json').write_text(json.dumps({'case': name}), encoding='utf8')
+    return case
+
+
+def _write_geometry(case, wall=500.0):
+    (case / 'geometry.json').write_text(json.dumps({
+        'schema': 'geometry/v1',
+        'case_id': case.name,
+        'wall_radius_px': wall,
+        'n_particles': 2,
+        'phi': 0.02,
+        'n_detected_median': 2.0,
+    }), encoding='utf8')
+
+
+def test_index_refuses_a_case_without_geometry(tmp_path):
+    batch_dir = tmp_path / 'batch'
+    _write_case(batch_dir)
+    try:
+        batch.build_index(batch_dir)
+    except FileNotFoundError as exc:
+        assert 'geometry.json' in str(exc)
+    else:
+        raise AssertionError('index accepted a case without geometry.json')
+    assert not (batch_dir / 'index.json').exists()
+
+
+def test_allow_missing_geometry_indexes_but_accept_refuses(tmp_path):
+    batch_dir = tmp_path / 'batch'
+    _write_case(batch_dir)
+    index = batch.build_index(batch_dir, allow_missing_geometry=True)
+    rec = index['sequences'][0]
+    assert rec['geometry'] is None
+    assert rec['geometry_warning']
+
+    report = batch.accept(batch_dir)
+    assert report['accepted'] is False
+    problems = [p for r in report['sequences'] for p in r['problems']]
+    assert any('geometry' in p for p in problems)
+
+
+def test_geometry_hash_is_part_of_the_gate(tmp_path):
+    batch_dir = tmp_path / 'batch'
+    case = _write_case(batch_dir)
+    _write_geometry(case)
+    batch.build_index(batch_dir)
+    assert batch.accept(batch_dir)['accepted'] is True
+    report, bad = batch.verify(batch_dir)
+    assert report['accepted'] is True and bad == []
+
+    _write_geometry(case, wall=501.0)          # file changed after indexing
+    report, _bad = batch.verify(batch_dir)
+    assert report['accepted'] is False
+    problems = [p for r in report['sequences'] for p in r['problems']]
+    assert any('geometry sha256' in p for p in problems)

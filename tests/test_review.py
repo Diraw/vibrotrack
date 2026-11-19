@@ -146,3 +146,38 @@ def test_queue_hints_point_at_the_missing_particle(tmp_path):
     assert hints[0]['segments'] == [1]
     assert hints[0]['xy_px'] == [30.0, 10.0]
     assert hints[0]['distance'] == 1
+
+
+def test_curate_carries_geometry_and_refreshes_its_detection_median(tmp_path):
+    """A curated copy must stay a complete case.
+
+    geometry.json went missing from every curated batch on 2026-11-19 because
+    this pass copied only dataset.json and run_config.json; the container
+    geometry is inherited, so it has to travel with the rows while its
+    detection median follows the new chunks.
+    """
+    case = _make_case(tmp_path)
+    (case / 'geometry.json').write_text(json.dumps({
+        'schema': 'geometry/v1', 'case_id': 'case', 'wall_radius_px': 500.0,
+        'n_particles': 2, 'phi': 0.02, 'n_detected_median': 99.0,
+    }), encoding='utf8')
+    (case / 'full_summary.json').write_text(
+        json.dumps({'case': 'case', 'segments': 2}), encoding='utf8')
+    actions = tmp_path / 'actions.json'
+    actions.write_text(json.dumps({
+        'schema': 'review-actions/v1',
+        'actions': [{'frame': 0, 'op': 'remove', 'xy_px': [10, 10]}],
+    }), encoding='utf8')
+
+    out_case = tmp_path / 'curated' / 'sequences' / 'case'
+    review.apply_actions(case, actions, tmp_path / 'curated', tolerance=2.0)
+
+    geo = json.loads((out_case / 'geometry.json').read_text(encoding='utf8'))
+    assert geo['wall_radius_px'] == 500.0
+    assert geo['phi'] == 0.02
+    assert geo['n_detected_median'] == 1.0      # frame counts are now 1 and 1
+    assert (out_case / 'dataset.json').exists()
+    assert (out_case / 'review.json').exists()
+    # The parent summaries describe the parent's linked product; curation
+    # invalidates the linking, so they must not travel.
+    assert not (out_case / 'full_summary.json').exists()

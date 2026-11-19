@@ -36,6 +36,7 @@ from scipy.spatial import cKDTree
 
 from . import detect as X
 from . import detect2 as D2
+from . import geometry as G
 from . import relink as R
 
 REFINE_SCHEMA = 'refine/v1'
@@ -885,6 +886,8 @@ def refine_case(case_dir, out_root, raw_dir, *, max_gap=None, radius=None,
     for src in case_dir.iterdir():
         if src.is_file() and not src.name.startswith('chunk_'):
             shutil.copy2(src, seq_out / src.name)
+    G.refresh_detection_stats(seq_out / 'geometry.json',
+                              [len(rec['xy_px']) for _fid, rec in frames])
 
     record = {
         'schema': REFINE_SCHEMA,

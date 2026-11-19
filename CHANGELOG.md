@@ -1,4 +1,100 @@
+## 0.10.7 — 2026-11-19
+
+- `curate` now carries every sidecar of the parent case, `geometry.json`
+  included.  `refine` and `relink` already did; `curate` copied only
+  `dataset.json` and `run_config.json`, so `audit -> curate -> refine` silently
+  produced batches with no wall radius and no phi - the exact way the five and
+  three cases of the 2026-11-17 batches lost theirs.  The two summaries
+  (`full_summary.json`, `progress.json`) are still not carried: they describe
+  the parent's linked product, and curation invalidates the linking they
+  record.
+- A derived case keeps its parent's container geometry but refreshes
+  `n_detected_median` from its own chunks (`geometry.refresh_detection_stats`),
+  so `geometry.json` cannot contradict the rows it ships with.  `curate`,
+  `refine` and `relink` all call it.
+- `index` refuses a case without `geometry.json`; `--allow-missing-geometry`
+  keeps the old warning-only behaviour for exploratory batches.
+  `accept`/`verify` now fail when the file is absent, when `index.json` has no
+  hash for it, or when that hash changed.  Previously `index` recorded
+  `geometry_sha256: null` and `verify` skipped the file, which is the gap that
+  let the 2026-11-18 batches freeze without geometry.
+
 # Changelog
+
+## 0.10.6 — 2026-11-18
+
+- New `vibrotrack audit`: flag the "triangle void" false centres on a *finished* case.
+  Three touching discs close a ring that the fixed-radius fit accepts; the phantom sits
+  1.0-1.3 R from the three real particles, the hard-disc NMS deletes them, and the
+  frame loses 2-3 real particles while gaining one phantom - the per-frame **count** stays
+  plausible, so a count gate cannot see it.  The phantom is recognisable from the marker
+  pass on the final set (its dark blob is the gap: centred and small):
+
+      marker_area_px < 145 and marker_offset_px < 9 and confidence < 0.40
+
+  `audit` writes `audit.json` (per-void frame, position, marker evidence) and a
+  `review_actions.json` ready for `curate`.  The intended chain is
+  `audit -> curate -> refine --max-gap 80 --head-fill 60`: after the phantom is gone the
+  three real neighbours come back from the track prediction, measured against manual
+  clicks at 0.6 px median (39/39 within 3 px).
+- A looser second branch (`area < 130 and offset < 10.5`) was tried and withdrawn: it
+  flagged a real particle at (385.4, 1538.4) of `600_3` frame 3423 (marker area 121,
+  offset 9.2, but a template peak at confidence 0.30 and a clean 12-ray fit), and
+  removing it turned an honest 598 into a wrong 599.  One branch only.
+- The rule stays out of the detector on purpose: applied to candidates before the NMS it
+  cost 1,688 detections per 27,000-frame case for 13 fixed frames (0.10.5 experiment).
+  Every row added by any repair must also satisfy the hard-disc constraint
+  (>= 1.75 R from every other centre); that check is what caught two manually placed
+  centres 37.8 and 49.4 px from real particles.
+
+## 0.10.5 — 2026-11-18
+
+- Detector v2 vetos the interstitial gap between three touching discs.  When three
+  discs form a triangle their three rims close a ring that the fixed-radius fit
+  accepts, and the resulting centre sits 1.0-1.2 r from the three real ones, so the
+  hard-disc NMS then deletes all three: the frame loses 2 net detections and
+  `refine` cannot put them back (every fit there is refused as a duplicate).
+  The false centre is recognisable from the marker pass: its dark blob is the gap
+  itself - centred (`marker_offset_px` ~5, a real slot sits ~11.5 px off centre) and
+  small (`marker_area_px` ~110 vs ~220).  New gates `void_area_max=145`,
+  `void_offset_max=9` reject it **before** the NMS.  Calibrated on 46 user-confirmed
+  voids (area 67-141, offset 0.5-8.4; the three real neighbours at 35-47 px): the
+  rule catches 46/46 and flags 4-671 detections per 16.2 M case (0.00002-0.004%).
+  A third gate `void_conf_max=0.40` keeps dim real particles with small slots (in a
+  1000-frame shard only 3 of 5 rule hits survive that gate, and those 3 are the
+  low-confidence voids at 0.26-0.28).  The veto removes the false centre; the three
+  real particles still need the local search (`refine`) or a manual click, because
+  their rims are cut by each other.
+- **`void_veto` ships OFF (default False).**  A full 27,000-frame re-extraction of
+  `590a10_1` with the veto on lost 1,688 detections and gained 13 (steady state:
+  -1,364 over 1,051 frames, +13).  The gate is applied to *candidates* before the
+  hard-disc NMS, and in a dense bed a weak template candidate (confidence 0.2-0.35,
+  small marker area because the slot is partly covered) is often the only candidate
+  that keeps a real particle alive.  The marker signature alone therefore cannot
+  separate "void" from "particle with an occluded slot".  The measured signature of
+  a true void (46 user-confirmed cases: area 67-141, offset 0.5-8.4, confidence
+  0.22-0.37) is still useful for a *post-hoc* repair pass that re-searches the
+  three neighbours after removing a confirmed void - that is the next step, not a
+  detector default.
+- `void_veto=False` restores the previous behaviour.
+
+## 0.10.4 — 2026-11-17
+
+- `review` no longer re-decompresses a whole chunk for every flagged frame.
+  `_frame_rows` called `z[key][lo:hi]` on an NpzFile, which inflates the whole
+  array before slicing; on a 27,000-frame case (16.2 M rows) with 43 flagged
+  frames that reached ~28 GB and failed with `_ArrayMemoryError`. Each chunk's
+  detection fields are now read once and sliced, so the peak is one copy of the
+  chunk. Queues, hints and exported frames are unchanged.
+
+## 0.10.3 — 2026-11-17
+
+- `fast_tiff.read` handles 8-bit uncompressed Basler TIFFs (2400x2400, one row per
+  strip) as well as the 16-bit layout it was written for. PIL decodes the 8-bit
+  frames at ~80 ms each; the strip view is 3.3 ms and byte-identical (verified on
+  5/5 files against tifffile). On the 2026-11-17 batch (135,000 frames) this halved
+  the wall time, which was otherwise I/O-bound at 60-95 MB/s on the USB disk.
+  The 16-bit path is unchanged; the fallback to PIL stays for any other layout.
 
 ## 0.10.2 — 2026-11-12
 

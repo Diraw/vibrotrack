@@ -43,6 +43,14 @@ A2 = np.column_stack((CS, SN)).astype(np.float32)
 DEFAULTS = dict(thresh=0.20, min_rays=14, r_tol=1.5, max_shift=5.0,
                 solid_ns=30, min_sep=1.75, bright_min=80.0, radius_fallback=36.9,
                 avoid_r=0.0,
+                # 2026-11-18: the gap between three touching discs is a closed ring of
+                # three rims and can be fitted as a disc.  Its dark blob is the gap
+                # itself: centred (offset ~5 px, a real slot sits ~11.5 px off centre)
+                # and small (area ~110, a real slot ~220).  Veto it BEFORE the hard-disc
+                # NMS, otherwise it suppresses the three real neighbours at 1.0-1.2 r.
+                # Thresholds from 46 user-confirmed voids (area 67-141, offset 0.5-8.4)
+                # against 16.2 M real detections: area p1 = 132, offset p1 = 7.0.
+                void_area_max=145.0, void_offset_max=9.0, void_conf_max=0.40, void_veto=False,
                 radius_split_px=4.0,  # two inferred classes need centres at least this far apart
                 prior_conf=0.5, prior_dedupe=0.0,   # 0 = keep every seed; the fit rejects stale ones   # a prior seed ranks below a real template peak
                 )   # avoid_r 0 = no fixed-disc guard; only wall_model=geometry sets one
@@ -322,6 +330,14 @@ def frame(im, search_mask, dist, bbox=None, interior_mask=None, static_centres=N
     if len(cand):
         bright_t = _brightness(im, xy[cand])
         ok[cand[bright_t <= p['bright_min']]] = False
+
+    # void veto: see DEFAULTS['void_area_max']
+    acc = np.where(ok)[0]
+    if p['void_veto'] and len(acc):
+        _th, _av, _off, _ar, _br = _marker(im, xy[acc])
+        void = ((_ar < p['void_area_max']) & (_off < p['void_offset_max']) &
+                (conf0[acc] < p['void_conf_max']))
+        ok[acc[void]] = False
 
     # hard-disc minimum separation, higher trust wins
     acc = np.where(ok)[0]

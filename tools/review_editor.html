@@ -527,13 +527,28 @@
     const p = canvasPoint(ev);
     if (state.mode === 'add') {
       const [near, dist] = nearestDetection(ed, p);
-      const minDist = Number(state.queue.median_radius_px) || 36;
-      if (near >= 0 && dist < minDist * 1.4) {
-        setLoad('这里已有检测；切到删除模式可删除它', true);
+      const r0 = Number(state.queue.median_radius_px) || 36;
+      // Hard-disc limit: two centres closer than 2 r are impossible; the detector
+      // uses 1.75 r to leave a little room for fit noise. A manual add must obey it
+      // too, otherwise the count looks right while a phantom sits on a neighbour.
+      const hardSep = r0 * 1.75;
+      if (near >= 0 && dist < hardSep) {
+        setLoad(`距已有圆心 ${dist.toFixed(1)} px < ${hardSep.toFixed(0)} px（硬盘最小间距 1.75r）——这里不可能还有一颗；若要删掉那个误检，切到删除模式`, true);
+        return;
+      }
+      let clash = -1, clashD = Infinity;
+      ed.added.forEach((a, i) => {
+        const dd = Math.hypot(a.xy_px[0] - p[0], a.xy_px[1] - p[1]);
+        if (dd < clashD) { clashD = dd; clash = i; }
+      });
+      if (clash >= 0 && clashD < hardSep) {
+        setLoad(`距本帧刚加的点只有 ${clashD.toFixed(1)} px < ${hardSep.toFixed(0)} px——两点不可能同时是颗粒`, true);
         return;
       }
       remember();
-      ed.added.push({xy_px: p, radius_px: Number(state.queue.median_radius_px) || 36});
+      ed.added.push({xy_px: p, radius_px: r0});
+      setLoad(`已加 (${p[0].toFixed(1)}, ${p[1].toFixed(1)})，到最近圆心 ${(near >= 0 ? dist : clashD).toFixed(1)} px`
+              + (near >= 0 ? '' : '（本帧唯一点）'));
       draw(); updateStatus();
     } else {
       const [near, dist] = nearestDetection(ed, p);

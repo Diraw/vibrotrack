@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import geometry as G
 from .orientation import estimate_marker_orientation
 
 QUEUE_SCHEMA = 'review-queue/v1'
@@ -57,13 +58,22 @@ def _json_number(v):
     return None if not np.isfinite(v) else v
 
 
-def _frame_rows(z, i):
+def _chunk_arrays(z):
+    """Decompress every detection field of one chunk exactly once.
+
+    2026-11-17: ``z[key][lo:hi]`` on an NpzFile decompresses the WHOLE array every
+    call; called once per flagged frame that cost 0.6-1.5 GB each and a 27,000-frame
+    case with 43 flagged frames died at ~28 GB.  Reading each field once and slicing
+    keeps the peak at one copy of the chunk.
+    """
+    return {key: np.asarray(z[key]) for key in _DETECTION_FIELDS if key in z.files}
+
+
+def _frame_rows(z, i, arrays=None):
     lo, hi = int(z['frame_offsets'][i]), int(z['frame_offsets'][i + 1])
-    rec = {}
-    for key in _DETECTION_FIELDS:
-        if key in z:
-            rec[key] = np.asarray(z[key][lo:hi])
-    return rec
+    if arrays is None:
+        arrays = _chunk_arrays(z)
+    return {key: val[lo:hi] for key, val in arrays.items()}
 
 
 def count_stats(case_dir):
@@ -174,10 +184,11 @@ def build_queue(case_dir, expected_count=None, max_frames=0):
         for f in _chunks(case_dir):
             with np.load(f, allow_pickle=False) as z:
                 ids = np.asarray(z['frame_ids']).reshape(-1)
+                arrays = _chunk_arrays(z)
                 for i, fid in enumerate(ids):
                     fid = int(fid)
                     if fid in wanted and fid not in selected:
-                        selected[fid] = _frame_rows(z, i)
+                        selected[fid] = _frame_rows(z, i, arrays)
             if len(selected) == len(wanted):
                 break
     missing = sorted(set(flagged) - set(selected)) if flagged else []
@@ -400,6 +411,7 @@ def apply_actions(case_dir, actions_path, out_dir, *, tolerance=8.0,
     frame_changes = {}
     seen_frames = set()
     outputs = []
+    all_counts = []
 
     for cf in chunks:
         with np.load(cf, allow_pickle=False) as z:
@@ -545,6 +557,7 @@ def apply_actions(case_dir, actions_path, out_dir, *, tolerance=8.0,
         offsets = [0]
         for n in counts:
             offsets.append(offsets[-1] + n)
+        all_counts.extend(int(c) for c in counts)
         new_arrays['frame_ids'] = np.asarray(ids, np.int64)
         new_arrays['frame_offsets'] = np.asarray(offsets, np.int32)
         for key, value in scalar.items():
@@ -561,10 +574,18 @@ def apply_actions(case_dir, actions_path, out_dir, *, tolerance=8.0,
             skipped.append({'frame': fid, 'op': a['op'], 'xy_px': a['xy_px'],
                             'reason': 'frame not found in chunks'})
 
-    for name in ('dataset.json', 'run_config.json'):
-        src = case_dir / name
-        if src.exists():
-            (seq_out / name).write_bytes(src.read_bytes())
+    # A curated copy is a complete case, not just the rows: carry every sidecar
+    # the parent wrote (geometry.json above all).  Refine and relink already do
+    # this; doing it in two passes out of three is how geometry.json vanished
+    # from every curated batch on 2026-11-19.  The two summaries are excluded on
+    # purpose: they describe the parent's linked product, and curation invalidates
+    # the linking it records (the note below tells the reader to re-run it).
+    skip = {'full_summary.json', 'progress.json', 'review.json'}
+    for src in sorted(case_dir.iterdir()):
+        if (src.is_file() and not src.name.startswith('chunk_')
+                and src.name not in skip):
+            shutil.copy2(src, seq_out / src.name)
+    G.refresh_detection_stats(seq_out / 'geometry.json', all_counts)
     review = {
         'schema': CURATION_SCHEMA,
         'case': case_dir.name,

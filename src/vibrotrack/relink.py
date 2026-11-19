@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from . import detect as X
+from . import geometry as G
 from . import link2 as L2
 
 RELINK_SCHEMA = 'relink/v1'
@@ -347,6 +348,8 @@ def relink_case(case_dir, out_root, *, linker=None, link_gap=None, force=False):
     for src in case_dir.iterdir():
         if src.is_file() and not src.name.startswith('chunk_'):
             shutil.copy2(src, seq_out / src.name)
+    G.refresh_detection_stats(seq_out / 'geometry.json',
+                              [len(rec['xy_px']) for _fid, rec in frames])
 
     record = {
         'schema': RELINK_SCHEMA,

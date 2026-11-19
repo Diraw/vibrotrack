@@ -205,3 +205,26 @@ def load(path):
     if rec.get('schema') != SCHEMA:
         raise ValueError('unexpected geometry schema: %r' % rec.get('schema'))
     return rec
+
+
+def refresh_detection_stats(path, counts):
+    """Refresh ``n_detected_median`` after a pass that changes the detection rows.
+
+    A curated, refined or relinked case inherits the container geometry from its
+    parent: the centre, the wall radius and phi describe the apparatus and must
+    not be re-fitted.  The detection median describes the *rows*, so it goes
+    stale as soon as a pass adds or removes one; keeping the parent's value
+    would make ``geometry.json`` contradict the chunk it ships with.
+
+    Returns the new median, or ``None`` when the case has no geometry.json.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    counts = np.asarray(counts, float)
+    if counts.size == 0:
+        return None
+    rec = json.loads(p.read_text(encoding='utf8'))
+    rec['n_detected_median'] = float(np.median(counts))
+    write(p, rec)
+    return rec['n_detected_median']

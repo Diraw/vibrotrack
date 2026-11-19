@@ -81,6 +81,10 @@ def test_cli_extract_index_accept_verify(tmp_path):
     assert ds['n_frames'] == 6
     assert ds['calibration']['px_per_mm'] == 5.0
 
+    assert cli.main(['geometry', '--case-dir', str(case_dir),
+                     '--config', str(cfg_path), '--base-dir', str(tmp_path)]) == 0
+    assert (case_dir / 'geometry.json').exists()
+
     assert cli.main(['index', '--batch-dir', str(batch)]) == 0
     assert cli.main(['accept', '--batch-dir', str(batch),
                      '--min-center', '0', '--min-angle', '0']) == 0

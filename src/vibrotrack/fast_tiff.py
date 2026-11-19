@@ -29,7 +29,12 @@ def _ifd(buf):
 
 
 def read(path):
-    """Return (image uint16 native byte order, 2-D). Fast path first, PIL fallback."""
+    """Return (image 2-D, uint16 or uint8 native byte order). Fast path first, PIL fallback.
+
+    2026-11-17: the same Basler rig also writes 8-bit frames (2400x2400, 1 row per
+    strip). PIL decodes those at ~80 ms/frame; the strip view is ~3 ms and
+    byte-identical (verified 5/5 files against tifffile).
+    """
     with open(path, 'rb', buffering=0) as fh:
         buf = fh.read()
     try:
@@ -37,17 +42,19 @@ def read(path):
         w, h = t[256][2], t[257][2]
         bps, comp = t[258][2], t[259][2]
         nstrip, table = t[273][1], t[273][2]
-        if bps != 16 or comp != 1 or nstrip != h:
+        if bps not in (8, 16) or comp != 1 or nstrip != h:
             raise ValueError('unexpected TIFF layout')
         if endian == '>':
             offs = np.frombuffer(buf, dtype='>I', count=nstrip, offset=table)
         else:
             offs = np.frombuffer(buf, dtype='<I', count=nstrip, offset=table)
         first, step = int(offs[0]), int(offs[1]) - int(offs[0])
-        if step != 2 * w or int(offs[-1]) + 2 * w > len(buf):
+        bpx = bps // 8
+        if step != bpx * w or int(offs[-1]) + bpx * w > len(buf):
             raise ValueError('strips are not contiguous rows')
-        a = np.frombuffer(buf, dtype=endian + 'u2', count=w * h, offset=first).reshape(h, w)
-        return a.astype('<u2', copy=True)
+        a = np.frombuffer(buf, dtype=endian + 'u%d' % bpx, count=w * h,
+                          offset=first).reshape(h, w)
+        return a.astype('<u%d' % bpx, copy=True)
     except Exception:
         import io
         from PIL import Image

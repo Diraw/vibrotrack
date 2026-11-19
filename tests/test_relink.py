@@ -63,6 +63,10 @@ def _make_case(tmp_path):
     (case / 'full_summary.json').write_text(json.dumps({
         'case': 'case', 'segments': 3, 'link_fraction': 0.0,
     }), encoding='utf8')
+    (case / 'geometry.json').write_text(json.dumps({
+        'schema': 'geometry/v1', 'case_id': 'case', 'wall_radius_px': 500.0,
+        'n_particles': 1, 'phi': 0.01, 'n_detected_median': 99.0,
+    }), encoding='utf8')
     return case
 
 
@@ -107,6 +111,9 @@ def test_relink_manual_rows_across_chunks_and_preserves_fields(tmp_path):
     assert ds['relink']['n_tracks'] == 1
     assert (out / 'review.json').exists()
     assert (out / 'relink.json').exists()
+    geo = json.loads((out / 'geometry.json').read_text(encoding='utf8'))
+    assert geo['wall_radius_px'] == 500.0
+    assert geo['n_detected_median'] == 1.0
 
 
 def test_relink_v1_and_cli(tmp_path):

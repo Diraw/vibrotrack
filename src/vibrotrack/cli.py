@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from . import audit as audit_mod
 from . import batch as batch_mod
 from . import boundary
 from . import detect as X
@@ -143,6 +144,26 @@ def _cmd_frame(args):
     out.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(img).save(out)
     print('frame:   %s  (%dx%d) -> %s' % (files[index].name, img.shape[1], img.shape[0], out))
+    return 0
+
+
+def _cmd_audit(args):
+    """Flag triangle-void false centres on a finished case (report only)."""
+    case_dir = Path(args.case_dir).expanduser().resolve()
+    out_dir = Path(args.out).expanduser() if args.out else case_dir / 'audit'
+    result = audit_mod.scan(case_dir, area_max=args.area_max, offset_max=args.offset_max,
+                            conf_max=args.conf_max, min_frame=args.min_frame)
+    audit_path, act_path, rec = audit_mod.write(case_dir, out_dir, result)
+    s = rec['summary']
+    print('case:   %s' % rec.get('case', ''))
+    print('frames: %d, count %d/%d/%d' % (s['n_frames'], s['count_min'],
+                                          int(s['count_median']), s['count_max']))
+    print('voids:  %d false centre(s) in %d frame(s)' % (s['n_voids'], s['n_frames_with_a_void']))
+    if s['void_frames']:
+        print('        frames %s' % s['void_frames'][:20])
+    print('audit:  %s' % audit_path)
+    print('actions:%s  (feed to `vibrotrack curate`, then `refine --max-gap 80 --head-fill 60`)'
+          % act_path)
     return 0
 
 
@@ -356,7 +377,8 @@ def _cmd_geometry(args):
 
 
 def _cmd_index(args):
-    idx = batch_mod.build_index(args.batch_dir)
+    idx = batch_mod.build_index(args.batch_dir,
+                                allow_missing_geometry=args.allow_missing_geometry)
     print('index: %d sequences, %d frames, %d rows -> %s'
           % (idx['n_sequences'], idx['total_frames'], idx['total_rows'],
              Path(args.batch_dir) / 'index.json'))
@@ -476,6 +498,21 @@ def build_parser():
     p.add_argument('--force', action='store_true', help='replace a non-empty output directory')
     p.set_defaults(func=_cmd_review)
 
+    p = sub.add_parser('audit', help='flag triangle-void false centres on a finished case')
+    p.add_argument('--case-dir', required=True,
+                   help='.../sequences/<case> containing chunk_*.npz')
+    p.add_argument('--out', default=None,
+                   help='report directory (default: <case>/audit)')
+    p.add_argument('--area-max', type=float, default=None,
+                   help='marker_area_px below this is void-like (default 145)')
+    p.add_argument('--offset-max', type=float, default=None,
+                   help='marker_offset_px below this is void-like (default 9)')
+    p.add_argument('--conf-max', type=float, default=None,
+                   help='confidence below this is void-like (default 0.40)')
+    p.add_argument('--min-frame', type=int, default=0,
+                   help='skip frames before this index (the start-up transient)')
+    p.set_defaults(func=_cmd_audit)
+
     p = sub.add_parser('curate', help='apply review add/remove actions to a separate curated copy')
     p.add_argument('--case-dir', required=True)
     p.add_argument('--actions', required=True, help='review_actions.json from the editor')
@@ -567,6 +604,9 @@ def build_parser():
 
     p = sub.add_parser('index', help='assemble index.json for a batch')
     p.add_argument('--batch-dir', required=True)
+    p.add_argument('--allow-missing-geometry', action='store_true',
+                   help='index an exploratory batch that has no geometry.json yet; '
+                        'accept and verify still refuse to pass it')
     p.set_defaults(func=_cmd_index)
 
     for name, func, text in (
