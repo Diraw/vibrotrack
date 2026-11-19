@@ -244,25 +244,29 @@ vibrotrack relink \
 
 ### 10. 单图速查（不进归档）
 
-实验室里想立刻知道「这张图多少颗」时，用浏览器打开 `tools/count_image.html`
-（单文件、零依赖、离线可用）：拖进 8/16-bit 未压缩 TIFF、PNG 或 JPG，自动给数量；
-左键加一颗、右键删一颗、`Ctrl+Z` 撤销，导出带圈标注的 PNG。
-
-它不是测量工具，产物不进归档：
-
-- 检测是同一套思路的轻量版：梯度方向圆投票（每个半径一张投票图，所以多分散
-  不需要先验尺寸）+ 36 条射线拟合圆心/半径 + 圆内亮度均匀性，用来剔掉三颗颗粒
-  围出的假圆心（与 `audit` 抓的是同一类）。实测 2400×2400 稠密床（600 颗）：
-  圆心误差中位 0.3 px，数量偏少 0–8%，灵敏度滑杆负责补漏检。
-- TIFF 只收未压缩、8/16 bit、灰度或 RGB、单条带或多条带；压缩 TIFF 与 BigTIFF
-  直接报错并说明原因。
-- 需要可归档的结果仍走 `extract → geometry → index → accept → verify`。
-
-回归自测（不需要浏览器、不需要原始数据）：
+想知道「这张图多少颗」时，不要另跑一套检测器——用同一个 detector v2：
 
 ```bash
-node tools/count_image_selftest.mjs
+vibrotrack count   --image path/to/Basler_..._0500.tiff   --out bench/0500   --open
 ```
+
+同目录的相邻帧（默认前 4 帧）先被检测，作为目标帧的先验种子：被邻居挤住的颗粒
+模板相关性会掉，但有先验时射线拟合仍能锁住它。实测 `590a10_3` 第 500 帧
+（稠密床 601 颗）：**599 颗、零假点、圆心中位误差 0.3 px**；不给先验时 588 颗。
+
+输出三件：
+
+| 文件 | 用途 |
+|---|---|
+| `count.html` | 双击打开：图与圆都在里面，左键加、右键删、`Ctrl+Z` 撤销、导出标注图 |
+| `frame.png` | 归一化后的 8-bit 帧 |
+| `detections.csv` | `x_px,y_px,radius_px` |
+
+可选 `--mask`（内壁掩膜，排除冻结螺钉）与 `--config`（apparatus YAML，取标定与
+检测参数）；`--before/--after` 控制用几帧做先验，`--thresh` 覆盖模板阈值。
+
+这是台面速查工具，不写归档；正式口径仍是
+`extract → geometry → index → accept → verify`。
 
 ## 输出格式
 

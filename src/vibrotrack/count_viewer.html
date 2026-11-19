@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>颗粒速查 · 单图计数</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#0f141a; --panel:#151d26; --line:#2b3a48; --fg:#e8eef5; --muted:#93a4b2;
+    --green:#20d67a; --cyan:#39d5ff; --orange:#ffb02e; --red:#ff5c64;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 system-ui, "Microsoft YaHei", "Segoe UI", sans-serif;
+         display:flex; flex-direction:column; overflow:hidden; }
+  header { padding:10px 16px 8px; border-bottom:1px solid var(--line); background:#121a22; }
+  h1 { font-size:16px; margin:0; font-weight:650; display:flex; gap:8px; align-items:baseline; }
+  h1 .tag { font-size:12px; color:var(--muted); font-weight:400; }
+  .hint { margin:4px 0 0; color:var(--muted); font-size:12.5px; }
+  kbd { background:#24313d; border:1px solid #3b4d5d; border-radius:4px; padding:0 4px; font-size:11.5px; }
+
+  .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+         padding:8px 16px; border-bottom:1px solid var(--line); background:#111922; }
+  button { background:var(--panel); color:var(--fg); border:1px solid #3a4c5c; border-radius:7px;
+           padding:6px 10px; font:inherit; cursor:pointer; }
+  button:hover { border-color:#5a768c; background:#1b2631; }
+  button:disabled { opacity:.42; cursor:default; }
+  button.mode.active { background:#174a35; border-color:var(--green); color:#c9ffe2; }
+  #status { margin-left:auto; color:var(--muted); font-size:12.5px; font-variant-numeric:tabular-nums; }
+
+  main { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) 252px; }
+  #stage { position:relative; min-height:0; overflow:hidden; background:#070b0f; cursor:crosshair; }
+  #stage.panning { cursor:grabbing; }
+  #canvas { display:block; width:100%; height:100%; }
+
+  aside { border-left:1px solid var(--line); background:var(--panel); padding:12px 14px;
+          overflow:auto; display:flex; flex-direction:column; gap:10px; }
+  .count { display:flex; align-items:baseline; gap:6px; }
+  .count span { font-size:44px; line-height:1; font-weight:650; font-variant-numeric:tabular-nums;
+                color:var(--green); }
+  .count small { color:var(--muted); font-size:13px; }
+  .muted { color:var(--muted); }
+  .small { font-size:12.5px; }
+  #hist { width:100%; height:auto; background:#0d141b; border:1px solid var(--line); border-radius:6px; }
+  dl { margin:0; display:grid; grid-template-columns:auto 1fr; gap:3px 10px; font-size:12.5px; }
+  dt { color:var(--muted); }
+  dd { margin:0; font-variant-numeric:tabular-nums; }
+  .help { margin-top:auto; color:var(--muted); font-size:12px; line-height:1.65;
+          border-top:1px solid var(--line); padding-top:8px; }
+  .help b { color:#cfe4f5; font-weight:600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>颗粒速查 <span class="tag">单图计数 · 检测器 = vibrotrack v2</span></h1>
+  <p class="hint">这张图的圆是 <b>vibrotrack detector v2</b> 算出来的（同目录相邻帧作先验）。
+    左键点空白加一颗、右键点颗粒删一颗，<kbd>Ctrl+Z</kbd> 撤销；滚轮缩放、拖拽平移。
+    速查用，不进归档数据。</p>
+</header>
+
+<div class="bar">
+  <button id="modeView" class="mode active">浏览</button>
+  <button id="modeAdd" class="mode">加</button>
+  <button id="undo" disabled>撤销</button>
+  <button id="clearManual" disabled>清空手改</button>
+  <button id="exportPng" disabled>导出标注图</button>
+  <span id="status">载入中…</span>
+</div>
+
+<main>
+  <div id="stage"><canvas id="canvas"></canvas></div>
+  <aside>
+    <div class="count"><span id="count">—</span><small>颗</small></div>
+    <div id="breakdown" class="muted small">—</div>
+    <canvas id="hist" width="224" height="84"></canvas>
+    <div id="radiusInfo" class="muted small">半径分布</div>
+    <dl>
+      <dt>图片</dt><dd id="infoSize">—</dd>
+      <dt>先验</dt><dd id="infoPrior">—</dd>
+      <dt>耗时</dt><dd id="infoTime">—</dd>
+    </dl>
+    <div class="help">
+      <b>怎么用</b><br>
+      1. 数字是人眼校对前的自动结果；<b>左键</b>加、<b>右键</b>删。<br>
+      2. <kbd>Ctrl+Z</kbd> 撤销，<kbd>F</kbd> 复位视图，<kbd>A</kbd> 切到加一颗。<br>
+      3. 「导出标注图」写出带圈和最终数量的 PNG。<br>
+      4. 缺颗多发生在被邻居挤住的颗粒上；想更准就重跑
+      <code>vibrotrack count</code> 并把相邻帧放在同一目录。<br>
+      5. 同一批数据的正式口径仍是 <code>extract → geometry → index → accept → verify</code>。
+    </div>
+  </aside>
+</main>
+
+<script>
+'use strict';
+const DATA = /*__DATA__*/;
+
+const $ = (id) => document.getElementById(id);
+const canvas = $('canvas');
+const ctx = canvas.getContext('2d');
+const stage = $('stage');
+const off = document.createElement('canvas');
+const offCtx = off.getContext('2d');
+const histCanvas = $('hist');
+const histCtx = histCanvas.getContext('2d');
+
+const S = {
+  img: null, particles: [], adds: [], ops: [],
+  view: { s: 1, x: 0, y: 0 }, mode: 'view', hover: null,
+};
+let drag = null;
+
+function visible() { return S.particles.filter((p) => !p.removed); }
+function setStatus(text) { $('status').textContent = text; }
+
+// ---------- image ----------
+function loadImage() {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => {
+      off.width = im.naturalWidth;
+      off.height = im.naturalHeight;
+      offCtx.drawImage(im, 0, 0);
+      buildMips(off);
+      resolve({ w: im.naturalWidth, h: im.naturalHeight });
+    };
+    im.onerror = () => reject(new Error('图片载入失败'));
+    im.src = DATA.image;
+  });
+}
+
+// ---------- render ----------
+// Three mip levels, built once from the full frame.  Zooming out then samples a
+// small canvas instead of resampling 5.7 M pixels per wheel event; zooming in
+// draws only the visible source rectangle.  Without both, dragging a 2400x2400
+// frame at 4x stutters on every mouse move.
+const mips = [];
+let rafId = 0;
+
+function buildMips(base) {
+  mips.length = 0;
+  mips.push({ s: 1, c: base });
+  let src = base;
+  for (let k = 2; k <= 8; k *= 2) {
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(base.width / k));
+    c.height = Math.max(1, Math.round(base.height / k));
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = 'medium';
+    g.drawImage(src, 0, 0, c.width, c.height);
+    mips.push({ s: 1 / k, c });
+    src = c;
+  }
+}
+
+function pickMip(scale, dpr) {
+  const need = Math.min(1, scale * dpr);
+  for (let i = 0; i < mips.length; i++) {
+    if (mips[i].s >= need * 0.9) return mips[i];
+  }
+  return mips[mips.length - 1];
+}
+
+function render() {
+  if (rafId) return;
+  rafId = requestAnimationFrame(() => { rafId = 0; paint(); });
+}
+
+function paint() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cw = stage.clientWidth, ch = stage.clientHeight;
+  if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#070b0f';
+  ctx.fillRect(0, 0, cw, ch);
+  if (!S.img) return;
+  const v = S.view;
+  const W = S.img.w, H = S.img.h;
+
+  // visible part of the image, in image pixels
+  const sx0 = Math.max(0, -v.x / v.s), sy0 = Math.max(0, -v.y / v.s);
+  const sx1 = Math.min(W, (cw - v.x) / v.s), sy1 = Math.min(H, (ch - v.y) / v.s);
+  if (sx1 <= sx0 || sy1 <= sy0) return;
+
+  const mip = pickMip(v.s, dpr);
+  const dx = v.x + sx0 * v.s, dy = v.y + sy0 * v.s;
+  const dw = (sx1 - sx0) * v.s, dh = (sy1 - sy0) * v.s;
+  ctx.imageSmoothingEnabled = v.s * dpr <= 1.2;
+  ctx.imageSmoothingQuality = 'medium';
+  ctx.drawImage(mip.c, sx0 * mip.s, sy0 * mip.s,
+                (sx1 - sx0) * mip.s, (sy1 - sy0) * mip.s, dx, dy, dw, dh);
+
+  // only circles that can be on screen
+  const pad = 8;
+  const vis0x = sx0 - pad, vis0y = sy0 - pad, vis1x = sx1 + pad, vis1y = sy1 + pad;
+  for (const p of S.particles) {
+    if (p.removed) continue;
+    if (p.x + p.r < vis0x || p.x - p.r > vis1x ||
+        p.y + p.r < vis0y || p.y - p.r > vis1y) continue;
+    const x = v.x + p.x * v.s, y = v.y + p.y * v.s, r = Math.max(2, p.r * v.s);
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.lineWidth = p === S.hover ? 2.5 : 1.4;
+    ctx.strokeStyle = p.src === 'manual' ? '#39d5ff' : 'rgba(32,214,122,0.95)';
+    ctx.stroke();
+    if (p === S.hover) {
+      ctx.beginPath();
+      ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+      ctx.strokeStyle = '#ffb02e';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    }
+  }
+  ctx.strokeStyle = 'rgba(255,92,100,0.8)';
+  ctx.lineWidth = 1.4;
+  for (const p of S.particles) {
+    if (!p.removed) continue;
+    if (p.x + p.r < vis0x || p.x - p.r > vis1x ||
+        p.y + p.r < vis0y || p.y - p.r > vis1y) continue;
+    const x = v.x + p.x * v.s, y = v.y + p.y * v.s, d = Math.max(3, p.r * v.s * 0.6);
+    ctx.beginPath();
+    ctx.moveTo(x - d, y - d); ctx.lineTo(x + d, y + d);
+    ctx.moveTo(x + d, y - d); ctx.lineTo(x - d, y + d);
+    ctx.stroke();
+  }
+}
+
+function drawHist() {
+  const W = histCanvas.width, H = histCanvas.height;
+  histCtx.clearRect(0, 0, W, H);
+  histCtx.fillStyle = '#0d141b';
+  histCtx.fillRect(0, 0, W, H);
+  const rs = visible().map((p) => p.r);
+  if (!rs.length) return;
+  const lo = Math.min(...rs), hi = Math.max(...rs);
+  const span = Math.max(0.5, hi - lo);
+  const bins = 22;
+  const counts = new Array(bins).fill(0);
+  for (const r of rs) counts[Math.min(bins - 1, ((r - lo) / span * bins) | 0)]++;
+  const maxC = Math.max(...counts);
+  const bw = W / bins;
+  for (let i = 0; i < bins; i++) {
+    const bh = (counts[i] / maxC) * (H - 6);
+    histCtx.fillStyle = '#20d67a';
+    histCtx.fillRect(i * bw + 0.5, H - bh, Math.max(1, bw - 1), bh);
+  }
+}
+
+function updateUI() {
+  const vis = visible();
+  const nAuto = vis.filter((p) => p.src !== 'manual').length;
+  const nMan = vis.length - nAuto;
+  const nRem = S.particles.filter((p) => p.removed).length;
+  $('count').textContent = S.img ? vis.length : '—';
+  $('breakdown').textContent = !S.img ? '—'
+    : `自动 ${nAuto} · 手动 +${nMan}` + (nRem ? ` · 已删 ${nRem}` : '');
+  if (vis.length) {
+    const rs = vis.map((p) => p.r).sort((a, b) => a - b);
+    const med = rs[(rs.length / 2) | 0];
+    $('radiusInfo').textContent = `半径 中位 ${med.toFixed(1)} px · ${rs[0].toFixed(1)}–${rs[rs.length - 1].toFixed(1)}`;
+  } else {
+    $('radiusInfo').textContent = '半径分布';
+  }
+  drawHist();
+  $('undo').disabled = !S.ops.length;
+  $('clearManual').disabled = !S.adds.length && !S.particles.some((p) => p.removed);
+  $('exportPng').disabled = !S.img;
+  $('modeView').disabled = $('modeAdd').disabled = !S.img;
+  const m = DATA.meta;
+  $('infoSize').textContent = m ? `${m.width}×${m.height}` : '—';
+  $('infoPrior').textContent = m ? (m.neighbours.length ? `${m.neighbours.length} 帧` : '无（单张）') : '—';
+  $('infoTime').textContent = m && m.ms ? `${m.ms} ms` : '—';
+}
+
+// ---------- view ----------
+function fitView() {
+  if (!S.img) return;
+  const cw = stage.clientWidth, ch = stage.clientHeight;
+  const s = Math.min((cw - 16) / S.img.w, (ch - 16) / S.img.h);
+  S.view.s = Math.max(0.02, Math.min(8, s));
+  S.view.x = (cw - S.img.w * S.view.s) / 2;
+  S.view.y = (ch - S.img.h * S.view.s) / 2;
+  render();
+}
+
+function zoomAt(cx, cy, factor) {
+  const v = S.view;
+  const ns = Math.max(0.02, Math.min(24, v.s * factor));
+  const k = ns / v.s;
+  v.x = cx - (cx - v.x) * k;
+  v.y = cy - (cy - v.y) * k;
+  v.s = ns;
+  render();
+}
+
+function toImage(ev) {
+  const r = stage.getBoundingClientRect();
+  return { x: (ev.clientX - r.left - S.view.x) / S.view.s,
+           y: (ev.clientY - r.top - S.view.y) / S.view.s };
+}
+
+function pick(pt) {
+  let best = null, bestD = Infinity;
+  for (const p of S.particles) {
+    if (p.removed) continue;
+    const d = Math.hypot(p.x - pt.x, p.y - pt.y);
+    if (d <= Math.max(p.r * 1.05, 5) && d < bestD) { best = p; bestD = d; }
+  }
+  return best;
+}
+
+// ---------- edit ----------
+function addAt(ix, iy) {
+  const vis = visible();
+  const rs = vis.map((p) => p.r).sort((a, b) => a - b);
+  const r = rs.length ? rs[(rs.length / 2) | 0] : (DATA.meta.radius_px || 20);
+  const item = { x: ix, y: iy, r, src: 'manual', removed: false };
+  S.adds.push(item);
+  S.particles.push(item);
+  S.ops.push(() => {
+    const i = S.particles.indexOf(item);
+    if (i >= 0) S.particles.splice(i, 1);
+    const j = S.adds.indexOf(item);
+    if (j >= 0) S.adds.splice(j, 1);
+  });
+  updateUI();
+  render();
+}
+
+function removeAt(p) {
+  if (p.src === 'manual') {
+    const i = S.particles.indexOf(p);
+    if (i < 0) return;
+    S.particles.splice(i, 1);
+    const j = S.adds.indexOf(p);
+    if (j >= 0) S.adds.splice(j, 1);
+    S.ops.push(() => { S.particles.push(p); S.adds.push(p); });
+  } else {
+    p.removed = true;
+    S.ops.push(() => { p.removed = false; });
+  }
+  updateUI();
+  render();
+}
+
+function undo() {
+  const fn = S.ops.pop();
+  if (!fn) return;
+  fn();
+  updateUI();
+  render();
+}
+
+function clearManual() {
+  S.particles = S.particles.filter((p) => p.src !== 'manual' && !p.removed);
+  S.adds = [];
+  S.ops = [];
+  updateUI();
+  render();
+}
+
+// ---------- export ----------
+function exportPng() {
+  if (!S.img) return;
+  const w = S.img.w, h = S.img.h;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d');
+  g.drawImage(off, 0, 0);
+  const vis = visible();
+  const lw = Math.max(2, Math.round(Math.min(w, h) / 900));
+  for (const p of vis) {
+    g.beginPath();
+    g.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    g.strokeStyle = p.src === 'manual' ? '#39d5ff' : '#20d67a';
+    g.lineWidth = lw;
+    g.stroke();
+  }
+  const nRem = S.particles.filter((p) => p.removed).length;
+  const label = `${vis.length} particles` + (nRem ? `  (-${nRem})` : '');
+  const fs = Math.max(22, Math.round(w / 45));
+  const pad = Math.round(fs * 0.45);
+  g.font = `600 ${fs}px system-ui, "Microsoft YaHei", sans-serif`;
+  const tw = g.measureText(label).width;
+  g.fillStyle = 'rgba(8,12,16,0.72)';
+  g.fillRect(0, 0, tw + pad * 2, Math.round(fs * 1.65));
+  g.fillStyle = '#e8eef5';
+  g.fillText(label, pad, Math.round(fs * 1.18));
+  const name = (DATA.meta.image || '').split(/[\\/]/).pop();
+  const foot = `${name} · ${new Date().toLocaleString()}`;
+  g.font = `400 ${Math.max(14, Math.round(fs * 0.5))}px system-ui, sans-serif`;
+  const fw = g.measureText(foot).width;
+  const fh = Math.round(Math.max(14, fs * 0.5) * 1.6);
+  g.fillStyle = 'rgba(8,12,16,0.62)';
+  g.fillRect(0, h - fh, fw + pad * 2, fh);
+  g.fillStyle = '#cfe4f5';
+  g.fillText(foot, pad, h - Math.round(fh * 0.3));
+  c.toBlob((blob) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${name.replace(/\.[^.]+$/, '')}_count${vis.length}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }, 'image/png');
+}
+
+// ---------- wiring ----------
+function setMode(mode) {
+  S.mode = mode;
+  $('modeView').classList.toggle('active', mode === 'view');
+  $('modeAdd').classList.toggle('active', mode === 'add');
+  stage.style.cursor = mode === 'add' ? 'copy' : 'crosshair';
+}
+
+$('modeView').addEventListener('click', () => setMode('view'));
+$('modeAdd').addEventListener('click', () => setMode('add'));
+$('undo').addEventListener('click', undo);
+$('clearManual').addEventListener('click', clearManual);
+$('exportPng').addEventListener('click', exportPng);
+
+stage.addEventListener('mousedown', (ev) => {
+  if (!S.img) return;
+  if (ev.button === 2) {
+    const p = pick(toImage(ev));
+    if (p) removeAt(p);
+    ev.preventDefault();
+    return;
+  }
+  if (ev.button !== 0) return;
+  drag = { x: ev.clientX, y: ev.clientY, vx: S.view.x, vy: S.view.y, moved: false };
+});
+
+window.addEventListener('mousemove', (ev) => {
+  if (drag) {
+    const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) {
+      drag.moved = true;
+      S.view.x = drag.vx + dx;
+      S.view.y = drag.vy + dy;
+      stage.classList.add('panning');
+      render();
+    }
+    return;
+  }
+  if (S.img) {
+    const p = pick(toImage(ev));
+    if (p !== S.hover) { S.hover = p; render(); }
+  }
+});
+
+window.addEventListener('mouseup', (ev) => {
+  if (!drag) return;
+  const moved = drag.moved;
+  drag = null;
+  stage.classList.remove('panning');
+  if (moved || ev.button !== 0 || !S.img) return;
+  const pt = toImage(ev);
+  if (S.mode === 'add' && !pick(pt)) addAt(pt.x, pt.y);
+});
+
+stage.addEventListener('contextmenu', (ev) => ev.preventDefault());
+stage.addEventListener('wheel', (ev) => {
+  if (!S.img) return;
+  ev.preventDefault();
+  const r = stage.getBoundingClientRect();
+  zoomAt(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-ev.deltaY * 0.0015));
+}, { passive: false });
+
+window.addEventListener('keydown', (ev) => {
+  const tag = ev.target && ev.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); }
+  else if (ev.key === 'f') fitView();
+  else if (ev.key === 'a') setMode('add');
+  else if (ev.key === 'Escape') setMode('view');
+});
+
+window.addEventListener('resize', render);
+
+loadImage().then((dim) => {
+  S.img = dim;
+  S.particles = DATA.particles.map(([x, y, r]) => ({ x, y, r, src: 'auto', removed: false }));
+  setMode('view');
+  fitView();
+  updateUI();
+  setStatus(`${DATA.meta.n} 颗 · ${DATA.meta.ms} ms` +
+            (DATA.meta.neighbours.length ? ` · 先验 ${DATA.meta.neighbours.length} 帧` : ''));
+}).catch((err) => setStatus('载入失败：' + err.message));
+</script>
+</body>
+</html>

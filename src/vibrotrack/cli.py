@@ -13,6 +13,7 @@ from PIL import Image
 from . import audit as audit_mod
 from . import batch as batch_mod
 from . import boundary
+from . import count as count_mod
 from . import detect as X
 from . import detect2 as D2
 from . import geometry as G
@@ -146,6 +147,31 @@ def _cmd_frame(args):
     print('frame:   %s  (%dx%d) -> %s' % (files[index].name, img.shape[1], img.shape[0], out))
     return 0
 
+
+
+def _cmd_count(args):
+    """Count the particles in one image and write a viewer bundle."""
+    cfg = None
+    if args.config:
+        cfg = load_config(args.config, base_dir=args.base_dir)
+    det, image, meta = count_mod.count_image(
+        args.image, cfg=cfg, mask_path=args.mask, before=args.before,
+        after=args.after, thresh=args.thresh, passes=args.passes)
+    out = Path(args.out) if args.out else Path.cwd() / (Path(args.image).stem + '_count')
+    html, frame, csv_path = count_mod.write_bundle(out, image, det, meta)
+    print('particles: %d' % meta['n'])
+    if meta.get('radius_px'):
+        print('radius:    %.2f px (median)' % meta['radius_px'])
+    print('prior:     %s' % (', '.join(meta['neighbours']) if meta['neighbours']
+                             else 'none (single frame)'))
+    print('time:      %d ms' % meta['ms'])
+    print('viewer:    %s' % html)
+    print('frame:     %s' % frame)
+    print('csv:       %s' % csv_path)
+    if args.open:
+        import webbrowser
+        webbrowser.open(html.resolve().as_uri())
+    return 0
 
 def _cmd_audit(args):
     """Flag triangle-void false centres on a finished case (report only)."""
@@ -458,6 +484,22 @@ def build_parser():
     p.add_argument('--acquired-at', default=None)
     p.add_argument('--operator', default=None)
     p.set_defaults(func=_cmd_extract)
+
+    p = sub.add_parser('count', help='count the particles in one image (writes a viewer)')
+    p.add_argument('--image', required=True, help='one TIFF/PNG/JPG frame')
+    p.add_argument('--config', default=None, help='apparatus YAML (scale levels, detector params)')
+    p.add_argument('--base-dir', default=None)
+    p.add_argument('--mask', default=None, help='interior mask PNG; default: none (whole frame)')
+    p.add_argument('--before', type=int, default=4,
+                   help='preceding frames in the same folder used as prior seeds (default 4)')
+    p.add_argument('--after', type=int, default=0)
+    p.add_argument('--thresh', type=float, default=None,
+                   help='template threshold; default from the config or the detector default')
+    p.add_argument('--passes', type=int, default=None,
+                   help='detector passes on the target frame (default 1 with priors, 2 without)')
+    p.add_argument('--out', default=None, help='output folder (default: ./<frame>_count)')
+    p.add_argument('--open', action='store_true', help='open the viewer when done')
+    p.set_defaults(func=_cmd_count)
 
     p = sub.add_parser('mask', help='propose a boundary mask from raw frames and write a confirmation overlay')
     p.add_argument('--raw', required=True, help='directory of TIFF frames')
