@@ -168,6 +168,7 @@ def _cmd_count(args):
     print('viewer:    %s' % html)
     print('frame:     %s' % frame)
     print('csv:       %s' % csv_path)
+    print('overlay:   %s' % (out / 'overlay.png'))
     if args.open:
         import webbrowser
         webbrowser.open(html.resolve().as_uri())

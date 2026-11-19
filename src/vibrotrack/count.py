@@ -29,7 +29,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from . import detect as X
 from . import detect2 as D2
@@ -178,6 +178,18 @@ def write_bundle(out_dir, image, det, meta):
     html = _viewer_template().replace('/*__DATA__*/', schema_json(data))
     html_path = out / 'count.html'
     html_path.write_text(html, encoding='utf8')
+
+    # A flat PNG with the rings burned in, so the count can be checked without a
+    # browser at all.
+    overlay_path = out / 'overlay.png'
+    rgb = Image.fromarray(image).convert('RGB')
+    draw = ImageDraw.Draw(rgb)
+    lw = max(2, round(min(image.shape[:2]) / 900))
+    for x, y, r in particles:
+        draw.ellipse([x - r, y - r, x + r, y + r], outline=(32, 214, 122), width=lw)
+    draw.rectangle([0, 0, 12 + 14 * len(str(len(particles))), 42], fill=(8, 12, 16))
+    draw.text((10, 8), '%d' % len(particles), fill=(232, 238, 245))
+    rgb.save(overlay_path)
 
     csv_path = out / 'detections.csv'
     with csv_path.open('w', newline='', encoding='utf8') as fh:
