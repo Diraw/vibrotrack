@@ -153,6 +153,22 @@ def _png_data_uri(image):
     return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('ascii')
 
 
+def _display_uri(image, max_side=1200):
+    """A 1200 px copy for the viewer, matching the review pack's frame size.
+
+    The viewer redraws this every drag frame; a 2400 px source costs more per
+    sample on a machine without GPU acceleration, and the editor does not need
+    more than 1200 px to place a click.
+    """
+    h, w = image.shape[:2]
+    k = min(1.0, max_side / max(w, h))
+    if k >= 1.0:
+        return _png_data_uri(image)
+    small = np.asarray(Image.fromarray(image).resize(
+        (max(1, round(w * k)), max(1, round(h * k))), Image.BILINEAR))
+    return _png_data_uri(small)
+
+
 def _viewer_template():
     return resources.files('vibrotrack').joinpath('count_viewer.html').read_text(encoding='utf8')
 
@@ -169,7 +185,8 @@ def write_bundle(out_dir, image, det, meta):
     particles = [[round(float(x), 2), round(float(y), 2), round(float(r), 2)]
                  for (x, y), r in zip(xy, radii)]
     data = {
-        'image': _png_data_uri(image),
+        'image': _display_uri(image),
+        'full': _png_data_uri(image),
         'width': meta['width'],
         'height': meta['height'],
         'particles': particles,
