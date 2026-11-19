@@ -258,9 +258,12 @@ vibrotrack count   --image path/to/Basler_..._0500.tiff   --out bench/0500   --o
 
 | 文件 | 用途 |
 |---|---|
-| `count.html` | 双击打开：图与圆都在里面，左键加、右键删、`Ctrl+Z` 撤销、导出标注图 |
+| `overlay.png` | 圈和数字已经烧进图里，双击就看，不依赖浏览器 |
+| `count.html` | 要手改时打开：左键加、右键删、`Ctrl+Z` 撤销、导出标注图 |
 | `frame.png` | 归一化后的 8-bit 帧 |
 | `detections.csv` | `x_px,y_px,radius_px` |
+
+查看器按 1200 px 副本重绘、导出时用原图；状态栏里的 `绘制/ fps` 是给「卡不卡」留的证据。
 
 可选 `--mask`（内壁掩膜，排除冻结螺钉）与 `--config`（apparatus YAML，取标定与
 检测参数）；`--before/--after` 控制用几帧做先验，`--thresh` 覆盖模板阈值。
