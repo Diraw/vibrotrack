@@ -93,7 +93,8 @@ A failed sequence keeps its `problems` array; the report is written even when re
 
 ## Hash policy
 
-- `index.json` hashes every product it lists.
+- `index.json` hashes every product it lists, and refuses a case without `geometry.json`
+  (`--allow-missing-geometry` indexes it with a warning instead; `accept`/`verify` still fail).
 - `verify` re-hashes `chunk_*.npz`, `geometry.json`, `full_summary.json`,
   `run_config.json`, `dataset.json` and compares with `index.json`.
 - `archive` copies the batch and writes `FROZEN.json` with a fresh hash of every file.

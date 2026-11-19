@@ -142,8 +142,11 @@ vibrotrack verify --batch-dir batch
 ```
 
 `accept` 检查字段完整性、帧连续性、`center_valid`/`angle_valid` 比率、轨迹帧序、
-帧数覆盖和 npz 哈希；`verify` 重新计算所有产品哈希。只有 `verify` 通过的数据才建议
-进入定量分析。
+帧数覆盖、npz 哈希，以及 `geometry.json` 是否存在及其哈希是否与 `index.json` 一致；
+`verify` 重新计算所有产品哈希。只有 `verify` 通过的数据才建议进入定量分析。
+
+`index` 拒绝对没有 `geometry.json` 的 case 建索引（先去跑 `vibrotrack geometry`）；
+只做探索、暂不要几何时加 `--allow-missing-geometry`，但这样的批次 `accept`/`verify` 不会通过。
 
 ### 6. 冻结归档
 
