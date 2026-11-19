@@ -242,6 +242,28 @@ vibrotrack relink \
 读取 linker 和 gap，也可用 `--linker`/`--link-gap` 覆盖。详见
 [`docs/REVIEW.md`](docs/REVIEW.md)。
 
+### 10. 单图速查（不进归档）
+
+实验室里想立刻知道「这张图多少颗」时，用浏览器打开 `tools/count_image.html`
+（单文件、零依赖、离线可用）：拖进 8/16-bit 未压缩 TIFF、PNG 或 JPG，自动给数量；
+左键加一颗、右键删一颗、`Ctrl+Z` 撤销，导出带圈标注的 PNG。
+
+它不是测量工具，产物不进归档：
+
+- 检测是同一套思路的轻量版：梯度方向圆投票（每个半径一张投票图，所以多分散
+  不需要先验尺寸）+ 36 条射线拟合圆心/半径 + 圆内亮度均匀性，用来剔掉三颗颗粒
+  围出的假圆心（与 `audit` 抓的是同一类）。实测 2400×2400 稠密床（600 颗）：
+  圆心误差中位 0.3 px，数量偏少 0–8%，灵敏度滑杆负责补漏检。
+- TIFF 只收未压缩、8/16 bit、灰度或 RGB、单条带或多条带；压缩 TIFF 与 BigTIFF
+  直接报错并说明原因。
+- 需要可归档的结果仍走 `extract → geometry → index → accept → verify`。
+
+回归自测（不需要浏览器、不需要原始数据）：
+
+```bash
+node tools/count_image_selftest.mjs
+```
+
 ## 输出格式
 
 ### `chunk_*.npz`
