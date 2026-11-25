@@ -103,7 +103,9 @@ vibrotrack extract \
   --mask masks/case01/interior_mask.png
 ```
 
-默认会用最近 5 帧检测结果作为 prior，并在每个 shard 前多检测 5 帧作为 warm-up；这避免 500 帧分片边界丢失上一帧信息。要复现旧行为可用 `--prior-frames 1 --shard-overlap 0`。
+v2 默认用最近 5 帧检测结果作 prior，仍采用并行 `warmup` 模式：每个 shard 从空历史重跑前 5 帧，不能保证与连续检测等价。旧版无重叠设定可用 `--prior-frames 1 --shard-overlap 0`。
+
+显式指定 `--prior-mode carry`（或 YAML `run.prior_mode: carry`）才会把实际检测历史按帧序传入下一 shard，空检测帧也占一帧，不重复预热。在该模式中，启用 prior 的单段录像只能顺序检测；仍有 TIFF 读入预取，但 `--workers` 不会增加该段的检测并行度。为避免旧缓存混入，carry 使用独立缓存目录，每次从首帧重算，不跨次续跑缓存。v1 或 YAML `run.prior: false` 不使用检测历史，仍可并行。实际模式写入 `run_config.json` / `dataset.json`。
 
 5 帧 prior 会把同一个粒子重复喂进径向拟合（检测阶段约 5 倍种子）。`detector.params.prior_dedupe`
 （默认 0 = 不去重）可以去掉模板峰若干像素内已覆盖的 prior 种子：300 真实帧配对实测 6 px 时
@@ -322,10 +324,11 @@ mask/overlay 的 sha256。字段见 [`docs/MASK.md`](docs/MASK.md)。
 | `detector.params` | {} | 透传给 v2：`thresh`、`min_rays`、`min_sep`、`prior_dedupe` 等 |
 | `linker.name` | v2 | v2 支持预测、匈牙利分配、补链 |
 | `linker.max_gap` | 5 | 最多补几帧 |
-| `run.workers` | 8 | 并行进程数；HDD 建议 1–4，SSD 可 8–12 |
+| `run.workers` | 8 | `warmup` 或无 prior 时的并行进程数；`carry` 为单进程 |
 | `run.shard` | 500 | 每个检测分片的帧数 |
 | `run.prior_frames` | 5 | 用最近几帧的检测位置作为 detector prior；1 = 仅上一帧 |
-| `run.shard_overlap` | 5 | 每个 shard 前面重新检测的 warm-up 帧数；避免 shard 边界丢失 prior |
+| `run.prior_mode` | `warmup` | `warmup` 保留旧并行模式；显式设置 `carry` 接续真实前序检测 |
+| `run.shard_overlap` | 5 | 仅 `warmup` 模式使用：每个 shard 之前从空历史重跑的帧数 |
 
 ## 边界 mask 怎么做
 

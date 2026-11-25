@@ -37,7 +37,8 @@ Example
       workers: 8
       shard: 500
       prior_frames: 5
-      shard_overlap: 5
+      prior_mode: warmup      # warmup | carry
+      shard_overlap: 5        # warmup only
     scale_levels: [128, 28224]
     conditions:
       frequency_hz: 140
@@ -81,6 +82,7 @@ class ApparatusConfig:
     prefetch: bool = True
     prior: bool = True
     prior_frames: int = 5
+    prior_mode: str = 'warmup'
     shard_overlap: int = 5
     extensions: tuple[str, ...] = ('.tiff', '.tif')
     conditions: dict[str, Any] = field(default_factory=dict)
@@ -171,6 +173,7 @@ def load_config(path, base_dir=None) -> ApparatusConfig:
     cfg.prefetch = bool(_get(raw, 'run', 'prefetch', default=cfg.prefetch))
     cfg.prior = bool(_get(raw, 'run', 'prior', default=cfg.prior))
     cfg.prior_frames = int(_get(raw, 'run', 'prior_frames', default=cfg.prior_frames))
+    cfg.prior_mode = str(_get(raw, 'run', 'prior_mode', default=cfg.prior_mode)).lower()
     cfg.shard_overlap = int(_get(raw, 'run', 'shard_overlap', default=cfg.shard_overlap))
     exts = raw.get('extensions')
     if exts:
@@ -206,6 +209,8 @@ def _validate(cfg: ApparatusConfig):
         raise ValueError('boundary.band must be 0 or 1')
     if cfg.prior_frames < 1:
         raise ValueError('run.prior_frames must be >= 1')
+    if cfg.prior_mode not in ('carry', 'warmup'):
+        raise ValueError('run.prior_mode must be carry or warmup')
     if cfg.shard_overlap < 0:
         raise ValueError('run.shard_overlap must be >= 0')
     if cfg.scale_levels[1] <= cfg.scale_levels[0]:

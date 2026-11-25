@@ -1,7 +1,8 @@
-"""Extract one case: detect shards in parallel, link in frame order, write products."""
+"""Extract one case: detect shards, link in frame order, write products."""
 from __future__ import annotations
 
 import time
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -54,11 +55,13 @@ def _write_dataset(case, config, case_dir, raw, dataset_id, project, campaign,
         },
         'conditions': config.conditions,
         'tracking': {
-            'detector': config.detector,
+            'detector': case['detector'],
             'detector_params': dict(config.detector_params),
             'prior_frames': int(config.prior_frames),
+            'prior_mode': case['prior_mode'],
             'shard_overlap': int(config.shard_overlap),
-            'linker': config.linker,
+            'effective_shard_overlap': int(config.shard_overlap) if case['prior_mode'] == 'warmup' else 0,
+            'linker': case['linker'],
             'link_gap': int(config.link_gap),
         },
         'calibration': {
@@ -95,6 +98,24 @@ def _write_dataset(case, config, case_dir, raw, dataset_id, project, campaign,
     return rec
 
 
+def _prior_mode(detector, prior, mode):
+    if mode not in ('carry', 'warmup'):
+        raise ValueError('run.prior_mode must be carry or warmup')
+    return 'off' if detector == 'v1' or not prior else mode
+
+
+def _detect_parts(case, tasks, workers):
+    if case['prior_mode'] == 'carry':
+        history = deque(maxlen=case['prior_frames'])
+        for task in tasks:
+            yield D.shard_task(task, history=history)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(D.shard_task, t) for t in tasks]
+            for f in as_completed(futures):
+                yield f.result()
+
+
 def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, workers=None,
              shard=None, detector=None, linker=None, wall_band=None, wall_model=None,
              strict_io=None, no_link=False, limit_shards=0, dataset_id=None,
@@ -116,6 +137,9 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
     wall_band = int(config.wall_band if wall_band is None else wall_band)
     wall_model = (wall_model or config.wall_model).lower()
     strict_io = config.strict_io if strict_io is None else bool(strict_io)
+    mode = _prior_mode(detector, config.prior, config.prior_mode)
+    if min(workers, shard, int(config.prior_frames)) < 1 or config.shard_overlap < 0 or limit_shards < 0:
+        raise ValueError('workers, shard and prior frames must be positive; overlap and limit must be nonnegative')
 
     case = dict(
         id=case_id,
@@ -137,6 +161,7 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
         detector_params=dict(config.detector_params),
         prior=bool(config.prior),
         prior_frames=int(config.prior_frames),
+        prior_mode=mode,
         shard_overlap=int(config.shard_overlap),
         particle_radius_px=float(config.radius_px),
     )
@@ -158,13 +183,13 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
     case['mask_source'] = mask_src or 'full_frame'
     progress('files: %d (%.2f s), shape=%s' % (len(files), time.time() - t0, case['shape']))
 
-    overlap = int(config.shard_overlap)
+    overlap = int(config.shard_overlap) if mode == 'warmup' else 0
     tasks = []
     for lo in range(0, n, shard):
         hi = min(lo + shard, n)
         file_lo = max(0, lo - overlap)
-        # The warm-up frames are detected but not written; they carry the prior
-        # across a shard boundary so the first output frame is not blind.
+        # Legacy warm-up replays the overlap from cold. Carry takes the actual
+        # preceding detections instead and reads every requested frame once.
         tasks.append((case, lo, hi, files[file_lo:hi], file_lo))
     if limit_shards:
         tasks = tasks[:int(limit_shards)]
@@ -173,25 +198,23 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
     next_lo = 0
     link_seconds = 0.0
     t0 = time.time()
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(D.shard_task, t) for t in tasks]
-        for f in as_completed(futures):
-            r = f.result()
-            if link_state is None:
-                continue
-            pending[r['lo']] = r
-            while next_lo in pending:
-                rr = pending.pop(next_lo)
-                part = D.load_det_part(case, rr['lo'], rr['hi'])
-                t = time.perf_counter()
-                D.link_part(part, link_state)
-                link_seconds += time.perf_counter() - t
-                next_lo = rr['hi']
+    for r in _detect_parts(case, tasks, workers):
+        if link_state is None:
+            continue
+        pending[r['lo']] = r
+        while next_lo in pending:
+            rr = pending.pop(next_lo)
+            part = D.load_det_part(case, rr['lo'], rr['hi'])
+            t = time.perf_counter()
+            D.link_part(part, link_state)
+            link_seconds += time.perf_counter() - t
+            next_lo = rr['hi']
     dt = time.time() - t0
     frames = sum(int(t[2]) - int(t[1]) for t in tasks)
-    progress('detect: %d frames in %.1f s (%.1f frames/s, %d workers, shard %d%s)'
-             % (frames, dt, frames / dt, workers, shard,
-                ', link overlapped' if link_state is not None else ''))
+    progress('detect: %d frames in %.1f s (%.1f frames/s, %d workers, shard %d, prior %s%s)'
+             % (frames, dt, frames / dt, 1 if mode == 'carry' else workers, shard, mode,
+                ', link interleaved' if link_state is not None and mode == 'carry'
+                else ', link overlapped' if link_state is not None else ''))
     if link_state is None:
         rec = _write_dataset(case, config, seq_root / case_id, raw, dataset_id,
                              project, campaign, acquired_at, operator)
@@ -199,16 +222,11 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
         schema.write_json(seq_root / case_id / 'dataset.json', rec)
         return rec
 
-    while next_lo in pending:
-        rr = pending.pop(next_lo)
-        part = D.load_det_part(case, rr['lo'], rr['hi'])
-        t = time.perf_counter()
-        D.link_part(part, link_state)
-        link_seconds += time.perf_counter() - t
-        next_lo = rr['hi']
+    if pending or next_lo != frames:
+        raise ValueError('detection shards did not cover all requested frames')
     t1 = time.perf_counter()
     status = D.finish_link(case, link_state)
     link_seconds += time.perf_counter() - t1
-    progress('link: %.1f s CPU (overlapped) %s' % (link_seconds, status))
+    progress('link: %.1f s measured %s' % (link_seconds, status))
     return _write_dataset(case, config, seq_root / case_id, raw, dataset_id,
                           project, campaign, acquired_at, operator)

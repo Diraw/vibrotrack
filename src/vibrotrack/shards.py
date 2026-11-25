@@ -1,14 +1,15 @@
 """Sharded dense detection + per-case linking.
 
-Stage A (parallel): detect every frame of a contiguous frame range, save arrays.
+Stage A: detect every frame of a contiguous range and save arrays. Causal prior
+carry runs shards in order; independent warm-up shards can run in parallel.
 Stage B (serial per case): conservative short-range linking over the ordered detections
 and write the existing chunk_*.npz contract consumed by the project analysis code.
 
-Original TIFFs are read-only. Detection is identical to extract.detect; only the
-parallel decomposition differs, so shard boundaries never enter the tracking because
-linking happens after all detections of a case are ordered.
+Original TIFFs are read-only. The linker consumes the ordered detections; in carry
+mode the detector also sees the same history as if there were no shard boundary.
 """
 from pathlib import Path
+from collections import deque
 import json, os, sys, time
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
@@ -57,10 +58,15 @@ def det_tag(case):
     parts = []
     if case.get('detector', 'v2') != 'v1':
         parts.append(case.get('detector', 'v2'))
-    # Prior history and shard overlap both change detections; keep their caches
-    # separate from the pre-overlap algorithm.
-    parts.append('p%d_o%d' % (int(case.get('prior_frames', 5)),
-                              int(case.get('shard_overlap', 5))))
+    mode = case.get('prior_mode', 'warmup')
+    prior_frames = int(case.get('prior_frames', 5))
+    if mode == 'carry':
+        parts.append('p%d_carry' % prior_frames)
+    elif mode == 'off':
+        parts.append('prior_off')
+    else:
+        # Preserve the independent warm-up cache namespace for legacy runs.
+        parts.append('p%d_o%d' % (prior_frames, int(case.get('shard_overlap', 5))))
     if int(case.get('wall_band', 0)):
         parts.append('w%d' % int(case.get('wall_dilate', 40)))
         parts.append('a%d' % int(float(case.get('avoid_r', 62.0))))
@@ -104,12 +110,26 @@ def resolve_wall_model(case, src):
     return wm
 
 
-def shard_task(args):
+def shard_task(args, *, history=None):
+    """Detect one shard; in carry mode advance the caller's bounded xy history."""
     case, lo, hi = args[:3]
     files = args[3] if len(args) > 3 else None
     file_lo = int(args[4]) if len(args) > 4 else lo
+    case = dict(case)
     cv2.setNumThreads(1)
     cid = case['id']
+    detector = case.get('detector', 'v2')
+    mode = case.get('prior_mode', 'warmup')
+    carry = mode == 'carry'
+    use_prior = bool(case.get('prior', True)) and detector != 'v1' and mode != 'off'
+    prior_frames = max(1, int(case.get('prior_frames', 1)))
+    if carry:
+        if (not use_prior or file_lo != lo or not isinstance(history, deque)
+                or history.maxlen != prior_frames or len(history) != min(lo, prior_frames)):
+            raise ValueError('carry shard needs the exact preceding history and no warm-up frames')
+    elif history is not None:
+        raise ValueError('history is only accepted by carry shards')
+    rolling = history if carry else deque(maxlen=prior_frames)
     if files is None:
         # Backward-compatible path for old drivers. New drivers pass files[file_lo:hi],
         # so the 9000-file directory scan/stat happens once in the parent instead of
@@ -118,10 +138,11 @@ def shard_task(args):
     if len(files) != hi - file_lo:
         raise ValueError('shard files do not cover [%d,%d): got %d files'
                          % (file_lo, hi, len(files)))
-    out = out_root(case) / cid / ('dets' + det_tag(case))
-    out.mkdir(parents=True, exist_ok=True)
-    dst = out / f'det_{lo:05d}_{hi-1:05d}.npz'
-    if dst.exists():
+    dst = det_path(case, lo, hi)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # A carry part depends on all its predecessors. Replaying is safer than
+    # accepting a cache hit without provenance for that entire causal chain.
+    if dst.exists() and not carry:
         return {'case': cid, 'lo': lo, 'hi': hi, 'status': 'cached'}
     interior, src = load_mask(case.get('mask_path'), case.get('shape'), required=True)
     case['mask_source'] = src or 'full_frame'
@@ -173,17 +194,6 @@ def shard_task(args):
     dist = cv2.distanceTransform(interior, cv2.DIST_L2, 5)
     bbox = X.mask_bbox(mask)
     strict_io = bool(case.get('strict_io', False))
-    detector = case.get('detector', 'v2')
-
-    use_prior = bool(case.get('prior', True)) and detector != 'v1'
-    prior_frames = max(1, int(case.get('prior_frames', 1)))
-
-    def prior_xy(records):
-        """Concatenate the last few frames as detector seeds."""
-        if not (use_prior and records):
-            return None
-        parts = [r['xy_px'] for r in records[-prior_frames:] if len(r['xy_px'])]
-        return np.concatenate(parts) if parts else None
 
     def detect_frame(im, prior=None):
         if detector == 'v1':
@@ -197,6 +207,15 @@ def shard_task(args):
                             prior_xy=prior, **params)
         return d
     recs = []
+
+    def consume(im):
+        parts = [xy for xy in rolling if len(xy)] if use_prior else []
+        rec = detect_frame(im, np.concatenate(parts) if parts else None)
+        recs.append(rec)
+        if use_prior:
+            # Empty detections still advance the temporal window by one frame.
+            rolling.append(rec['xy_px'])
+
     t0 = time.time()
     if os.environ.get('PREFETCH', '1') == '1':
         # Reader thread fills a small queue while the main thread detects: the frame
@@ -219,14 +238,11 @@ def shard_task(args):
                 break
             if isinstance(item, Exception):
                 raise item
-            prev = prior_xy(recs)
-            recs.append(detect_frame(item[1], prev))
+            consume(item[1])
         th.join()
     else:
-        for fi, path in enumerate(files, start=file_lo):
-            im = X.read_image(path, case['scale_levels'], strict=strict_io)
-            prev = prior_xy(recs)
-            recs.append(detect_frame(im, prev))
+        for path in files:
+            consume(X.read_image(path, case['scale_levels'], strict=strict_io))
     # Warm-up frames only supply prior; they are not part of this shard's
     # contract. Trim them before writing the det cache.
     trim = lo - file_lo
@@ -511,6 +527,8 @@ def write_run_config(case, cid, model):
         wall_dilate=int(case.get('wall_dilate', 40)), wall_tol_px=float(case.get('wall_tol_px', 6.0)),
         avoid_r=float(case.get('avoid_r', 0.0)), link_gap=int(case.get('link_gap', 5)),
         prior_frames=int(case.get('prior_frames', 5)), shard_overlap=int(case.get('shard_overlap', 5)),
+        prior_mode=case.get('prior_mode', 'warmup'),
+        effective_shard_overlap=int(case.get('shard_overlap', 5)) if case.get('prior_mode', 'warmup') == 'warmup' else 0,
         wall_static_std=bool(case.get('wall_static_std', True)),
         wall_static_thresh=float(case.get('wall_static_thresh', 10.0)),
         detector_defaults={k: float(v) for k, v in D2.DEFAULTS.items()},

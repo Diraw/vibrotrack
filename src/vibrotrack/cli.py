@@ -67,7 +67,7 @@ def _cmd_extract(args):
     for key, value in (('fps', args.fps), ('px_per_mm', args.px_per_mm),
                        ('diameter_mm', args.diameter_mm), ('workers', args.workers),
                        ('shard', args.shard), ('prior_frames', args.prior_frames),
-                       ('shard_overlap', args.shard_overlap)):
+                       ('shard_overlap', args.shard_overlap), ('prior_mode', args.prior_mode)):
         if value is not None:
             setattr(cfg, key, value)
     if args.n_particles is not None:
@@ -482,8 +482,10 @@ def build_parser():
     p.add_argument('--shard', type=int, default=None)
     p.add_argument('--prior-frames', type=int, default=None,
                    help='number of previous frames used as detector prior (default 5)')
+    p.add_argument('--prior-mode', choices=['carry', 'warmup'], default=None,
+                   help='legacy parallel warm-up (default), or opt into ordered detection history carry')
     p.add_argument('--shard-overlap', type=int, default=None,
-                   help='warm-up frames re-detected across a shard boundary (default 5)')
+                   help='frames re-detected at each boundary in warmup mode only (default 5)')
     p.add_argument('--detector', choices=['v1', 'v2'], default=None)
     p.add_argument('--linker', choices=['v1', 'v2'], default=None)
     p.add_argument('--wall-band', type=int, choices=[0, 1], default=None)
