@@ -94,7 +94,8 @@ def test_cli_extract_index_accept_verify(tmp_path):
     archive = tmp_path / 'archive'
     assert cli.main(['archive', '--batch-dir', str(batch),
                      '--archive-root', str(archive)]) == 0
-    assert (archive / 'batch' / 'FROZEN.json').exists()
+    frozen = json.loads((archive / 'batch' / 'FROZEN.json').read_text(encoding='utf-8'))
+    assert not any('.extract' in record['path'] for record in frozen['files'])
 
 
 

@@ -11,6 +11,7 @@ import numpy as np
 from . import detect as X
 from . import schema
 from . import shards as D
+from .case_output import case_lock, recover_case, stage_case
 from .config import ApparatusConfig
 from .mask import load_mask
 
@@ -27,9 +28,10 @@ def _mask_sha(mask_path):
     return schema.sha256(p) if p.exists() else None
 
 
-def _write_dataset(case, config, case_dir, raw, dataset_id, project, campaign,
-                   acquired_at, operator):
-    chunk_files = sorted(case_dir.glob('chunk_*.npz'))
+def _write_dataset(case, config, output_dir, case_dir, dataset_id, project, campaign,
+                   acquired_at, operator, *, detected_only=False):
+    product_dir = case_dir if detected_only else output_dir
+    chunk_files = sorted(product_dir.glob('chunk_*.npz'))
     names = [p.name for p in chunk_files] + ['full_summary.json', 'run_config.json']
     rec = {
         'schema_version': schema.SCHEMA_DATASET,
@@ -83,10 +85,10 @@ def _write_dataset(case, config, case_dir, raw, dataset_id, project, campaign,
             'version': schema.package_version(),
             **schema.git_info(),
         },
-        'outputs': schema.outputs_record(case_dir, names),
-        'qc': {'status': 'extracted'},
+        'outputs': schema.outputs_record(product_dir, names),
+        'qc': {'status': 'detected_only' if detected_only else 'extracted'},
         'retention': {
-            'raw_path': str(raw),
+            'raw_path': case['path'],
             'raw_deleted': False,
         },
         'config': {
@@ -94,7 +96,7 @@ def _write_dataset(case, config, case_dir, raw, dataset_id, project, campaign,
             'sha256': schema.sha256(config.path) if config.path and Path(config.path).exists() else None,
         },
     }
-    schema.write_json(Path(case_dir) / 'dataset.json', rec)
+    schema.write_json(output_dir / 'dataset.json', rec)
     return rec
 
 
@@ -116,20 +118,13 @@ def _detect_parts(case, tasks, workers):
                 yield f.result()
 
 
-def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, workers=None,
-             shard=None, detector=None, linker=None, wall_band=None, wall_model=None,
-             strict_io=None, no_link=False, limit_shards=0, dataset_id=None,
-             project='', campaign='', acquired_at=None, operator=None, progress=print):
-    """Run one case and return the dataset.json record.
-
-    ``out`` is the batch directory; products go to ``out/sequences/<case_id>/``.
-    """
+def prepare_case(raw, seq_root, config: ApparatusConfig, *, case_id, nframes=None,
+                 workers=None, shard=None, detector=None, linker=None, wall_band=None,
+                 wall_model=None, strict_io=None):
+    """Resolve the ordered input and effective detection settings for extraction."""
     raw = Path(raw).resolve()
     if not raw.is_dir():
         raise FileNotFoundError('raw frame directory not found: %s' % raw)
-    out = Path(out).resolve()
-    seq_root = out / 'sequences'
-    seq_root.mkdir(parents=True, exist_ok=True)
     workers = int(workers or config.workers)
     shard = int(shard or config.shard)
     detector = (detector or config.detector).lower()
@@ -138,8 +133,8 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
     wall_model = (wall_model or config.wall_model).lower()
     strict_io = config.strict_io if strict_io is None else bool(strict_io)
     mode = _prior_mode(detector, config.prior, config.prior_mode)
-    if min(workers, shard, int(config.prior_frames)) < 1 or config.shard_overlap < 0 or limit_shards < 0:
-        raise ValueError('workers, shard and prior frames must be positive; overlap and limit must be nonnegative')
+    if min(workers, shard, int(config.prior_frames)) < 1 or config.shard_overlap < 0:
+        raise ValueError('workers, shard and prior frames must be positive, and overlap nonnegative')
 
     case = dict(
         id=case_id,
@@ -166,7 +161,6 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
         particle_radius_px=float(config.radius_px),
     )
 
-    t0 = time.time()
     files = X.files_for(case)
     n = min(int(nframes), len(files)) if nframes else len(files)
     if n <= 0:
@@ -181,9 +175,13 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
                 % (case['shape'], (config.image_height, config.image_width)))
     _, mask_src = load_mask(case['mask_path'], case['shape'], required=True)
     case['mask_source'] = mask_src or 'full_frame'
-    progress('files: %d (%.2f s), shape=%s' % (len(files), time.time() - t0, case['shape']))
+    return case, files, workers, shard
 
-    overlap = int(config.shard_overlap) if mode == 'warmup' else 0
+
+def detection_tasks(case, files, shard):
+    """Build the same detection shards for extraction and preview."""
+    n = case['nframes']
+    overlap = case['shard_overlap'] if case['prior_mode'] == 'warmup' else 0
     tasks = []
     for lo in range(0, n, shard):
         hi = min(lo + shard, n)
@@ -191,14 +189,59 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
         # Legacy warm-up replays the overlap from cold. Carry takes the actual
         # preceding detections instead and reads every requested frame once.
         tasks.append((case, lo, hi, files[file_lo:hi], file_lo))
+    return tasks
+
+
+def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, workers=None,
+             shard=None, detector=None, linker=None, wall_band=None, wall_model=None,
+             strict_io=None, no_link=False, limit_shards=0, dataset_id=None,
+             project='', campaign='', acquired_at=None, operator=None, progress=print,
+             events=None):
+    """Run one case and publish its dataset under out/sequences/<case_id>/."""
+    if limit_shards < 0:
+        raise ValueError('limit_shards must be nonnegative')
+    if Path(case_id).name != case_id or case_id in ('', '.', '..'):
+        raise ValueError('case_id must be a single directory name')
+    seq_root = Path(out).resolve() / 'sequences'
+    case_dir = seq_root / case_id
+    t0 = time.time()
+    case, files, workers, shard = prepare_case(
+        raw, seq_root, config, case_id=case_id, nframes=nframes, workers=workers,
+        shard=shard, detector=detector, linker=linker, wall_band=wall_band,
+        wall_model=wall_model, strict_io=strict_io)
+    progress('files: %d (%.2f s), shape=%s' % (len(files), time.time() - t0, case['shape']))
+    with case_lock(case_dir):
+        recover_case(case_dir)
+        D.prepare_detection_cache(case, files[:case['nframes']], shard_size=shard)
+        return _run_prepared_case(
+            case, files, workers, shard, config, case_dir, no_link=no_link,
+            limit_shards=limit_shards, dataset_id=dataset_id, project=project,
+            campaign=campaign, acquired_at=acquired_at, operator=operator,
+            progress=progress, events=events)
+
+
+def _run_prepared_case(case, files, workers, shard, config, case_dir, *,
+                       no_link, limit_shards, dataset_id, project, campaign,
+                       acquired_at, operator, progress, events):
+    tasks = detection_tasks(case, files, shard)
     if limit_shards:
         tasks = tasks[:int(limit_shards)]
+    frames = sum(hi - lo for _, lo, hi, _, _ in tasks)
+    if events:
+        events(dict(event='progress', stage='inputs', done=frames, total=frames,
+                    available_frames=len(files), shape=case['shape']))
     link_state = None if no_link else D.new_link_state(case)
     pending = {}
     next_lo = 0
+    detected = 0
     link_seconds = 0.0
     t0 = time.time()
     for r in _detect_parts(case, tasks, workers):
+        detected += r['hi'] - r['lo']
+        if events:
+            events(dict(event='progress', stage='detect', done=detected, total=frames,
+                        first_frame=r['lo'], end_frame_exclusive=r['hi'],
+                        status=r['status']))
         if link_state is None:
             continue
         pending[r['lo']] = r
@@ -209,24 +252,27 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
             D.link_part(part, link_state)
             link_seconds += time.perf_counter() - t
             next_lo = rr['hi']
+            if events:
+                events(dict(event='progress', stage='link', done=next_lo, total=frames))
     dt = time.time() - t0
-    frames = sum(int(t[2]) - int(t[1]) for t in tasks)
+    mode = case['prior_mode']
     progress('detect: %d frames in %.1f s (%.1f frames/s, %d workers, shard %d, prior %s%s)'
              % (frames, dt, frames / dt, 1 if mode == 'carry' else workers, shard, mode,
                 ', link interleaved' if link_state is not None and mode == 'carry'
                 else ', link overlapped' if link_state is not None else ''))
-    if link_state is None:
-        rec = _write_dataset(case, config, seq_root / case_id, raw, dataset_id,
-                             project, campaign, acquired_at, operator)
-        rec['qc']['status'] = 'detected_only'
-        schema.write_json(seq_root / case_id / 'dataset.json', rec)
-        return rec
-
-    if pending or next_lo != frames:
+    if link_state is not None and (pending or next_lo != frames):
         raise ValueError('detection shards did not cover all requested frames')
-    t1 = time.perf_counter()
-    status = D.finish_link(case, link_state)
-    link_seconds += time.perf_counter() - t1
-    progress('link: %.1f s measured %s' % (link_seconds, status))
-    return _write_dataset(case, config, seq_root / case_id, raw, dataset_id,
-                          project, campaign, acquired_at, operator)
+    if events:
+        events(dict(event='progress', stage='publish', done=0, total=1))
+    with stage_case(case_dir) as staging:
+        if link_state is not None:
+            t1 = time.perf_counter()
+            status = D.finish_link(case, link_state, output_dir=staging)
+            link_seconds += time.perf_counter() - t1
+            progress('link: %.1f s measured %s' % (link_seconds, status))
+        record = _write_dataset(case, config, staging, case_dir, dataset_id, project,
+                                campaign, acquired_at, operator, detected_only=no_link)
+        D.validate_detection_cache(case, files=files[:case['nframes']])
+    if events:
+        events(dict(event='progress', stage='publish', done=1, total=1))
+    return record

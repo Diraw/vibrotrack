@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
+import json
 import sys
+import traceback
 
 import cv2
 from pathlib import Path
@@ -62,7 +65,7 @@ def _load_case_xy(case_dir, with_radius=False):
     return xy, counts
 
 
-def _cmd_extract(args):
+def _extract(args, **run_options):
     cfg = load_config(args.config, base_dir=args.base_dir)
     for key, value in (('fps', args.fps), ('px_per_mm', args.px_per_mm),
                        ('diameter_mm', args.diameter_mm), ('workers', args.workers),
@@ -76,8 +79,6 @@ def _cmd_extract(args):
         cfg.wall_model = args.wall_model
     if args.wall_band is not None:
         cfg.wall_band = int(args.wall_band)
-    if args.strict_io:
-        cfg.strict_io = True
     if args.mask:
         cfg.boundary_mask = Path(args.mask).expanduser().resolve()
     case_id = args.case_id or Path(args.raw).name
@@ -88,11 +89,62 @@ def _cmd_extract(args):
         strict_io=args.strict_io, no_link=args.no_link, limit_shards=args.limit_shards,
         dataset_id=args.dataset_id, project=args.project, campaign=args.campaign,
         acquired_at=args.acquired_at, operator=args.operator,
+        **run_options,
     )
+    return rec, Path(args.out) / 'sequences' / case_id
+
+
+def _cmd_extract(args):
+    if args.jsonl:
+        return _extract_jsonl(args)
+    rec, case_dir = _extract(args)
     print('dataset: %s' % rec['dataset_id'])
     print('case:    %s' % rec['case'])
     print('frames:  %s' % rec['n_frames'])
-    print('out:     %s' % (Path(args.out) / 'sequences' / case_id))
+    print('out:     %s' % case_dir)
+    return 0
+
+
+def _extract_jsonl(args):
+    stdout = sys.stdout
+
+    def emit(record):
+        print(json.dumps({'schema': 'extract-event/v1', **record}, allow_nan=False),
+              file=stdout, flush=True)
+
+    emit({'event': 'start', 'case': args.case_id or Path(args.raw).name,
+          'raw': args.raw, 'output': args.out})
+    try:
+        # File discovery emits warnings directly. Keep them and the existing
+        # human-readable progress off the JSONL stream.
+        with redirect_stdout(sys.stderr):
+            rec, case_dir = _extract(args, events=emit)
+    except KeyboardInterrupt:
+        emit({'event': 'error', 'status': 'interrupted', 'error_type': 'KeyboardInterrupt',
+              'message': 'Extraction interrupted'})
+        return 130
+    except Exception as exc:
+        traceback.print_exc(file=sys.stderr)
+        emit({'event': 'error', 'status': 'failed', 'error_type': type(exc).__name__,
+              'message': str(exc)})
+        return 1
+    emit({'event': 'result', 'status': 'complete', 'dataset_id': rec['dataset_id'],
+          'case': rec['case'], 'n_frames': rec['n_frames'], 'output': str(case_dir),
+          'qc_status': rec['qc']['status']})
+    return 0
+
+
+def _cmd_preview(args):
+    from . import preview
+
+    cfg = load_config(args.config, base_dir=args.base_dir)
+    if args.mask:
+        cfg.boundary_mask = Path(args.mask).expanduser().resolve()
+    rec, summary = preview.run_preview(args.raw, args.out, cfg, nframes=args.nframes)
+    for frame in rec['frames']:
+        print('%s: %d detections, %d invalid angles' %
+              (frame['source_name'], frame['detections'], frame['angle_invalid']))
+    print('summary: %s' % summary)
     return 0
 
 
@@ -490,7 +542,7 @@ def build_parser():
     p.add_argument('--linker', choices=['v1', 'v2'], default=None)
     p.add_argument('--wall-band', type=int, choices=[0, 1], default=None)
     p.add_argument('--wall-model', choices=['auto', 'geometry', 'empirical', 'off'], default=None)
-    p.add_argument('--strict-io', action='store_true')
+    p.add_argument('--strict-io', action='store_true', default=None)
     p.add_argument('--no-link', action='store_true')
     p.add_argument('--limit-shards', type=int, default=0, help='pilot only: stop after N shards')
     p.add_argument('--fps', type=float, default=None)
@@ -502,7 +554,18 @@ def build_parser():
     p.add_argument('--campaign', default='')
     p.add_argument('--acquired-at', default=None)
     p.add_argument('--operator', default=None)
+    p.add_argument('--jsonl', action='store_true',
+                   help='write extraction events as JSON lines to stdout; diagnostics go to stderr')
     p.set_defaults(func=_cmd_extract)
+
+    p = sub.add_parser('preview', help='detect and render the first TIFF frames without linking')
+    p.add_argument('--raw', required=True, help='directory of TIFF frames')
+    p.add_argument('--out', required=True, help='new or empty directory for overlays and preview_summary.json')
+    p.add_argument('--config', required=True, help='apparatus YAML')
+    p.add_argument('--base-dir', default=None, help='resolve relative config paths here (default: cwd)')
+    p.add_argument('--mask', default=None, help='interior mask PNG; overrides boundary.mask in the config')
+    p.add_argument('--nframes', type=int, default=5, help='number of initial sorted frames (default: 5)')
+    p.set_defaults(func=_cmd_preview)
 
     p = sub.add_parser('count', help='open the single-image bench tool, or count a file')
     p.add_argument('--image', help='one TIFF/PNG/JPEG frame; omit to start the local UI')

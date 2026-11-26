@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from . import schema
+from .case_output import LOCK_NAME, STAGE_NAME, require_published
 
 REQUIRED = [
     'xy_px', 'radius_px', 'theta_rad', 'center_valid', 'angle_valid',
@@ -51,6 +52,7 @@ def build_index(batch_dir, gate=None, allow_missing_geometry=False):
     records = []
     total_frames = total_rows = 0
     for seq_dir in sorted(p for p in seq_root.iterdir() if p.is_dir()):
+        require_published(seq_dir)
         ds_path = seq_dir / 'dataset.json'
         if not ds_path.exists():
             raise FileNotFoundError('missing dataset.json in %s' % seq_dir)
@@ -145,6 +147,10 @@ def build_index(batch_dir, gate=None, allow_missing_geometry=False):
 def _check_sequence(batch_dir, rec, gate):
     problems = []
     seq_dir = Path(batch_dir) / 'sequences' / rec['sequence']
+    try:
+        require_published(seq_dir)
+    except RuntimeError as exc:
+        return {'sequence': rec['sequence'], 'ok': False, 'problems': [str(exc)]}
     npz_path = seq_dir / rec['npz_file']
     if not npz_path.exists():
         return {'sequence': rec['sequence'], 'ok': False, 'problems': ['missing npz']}
@@ -303,6 +309,8 @@ def archive(batch_dir, archive_root, force=False):
     """Copy a verified batch to an immutable archive directory and write FROZEN.json."""
     batch_dir = Path(batch_dir).resolve()
     archive_root = Path(archive_root).resolve()
+    for seq_dir in (batch_dir / 'sequences').glob('*'):
+        require_published(seq_dir)
     acc_path = batch_dir / 'acceptance.json'
     if not force:
         if not acc_path.exists():
@@ -317,7 +325,8 @@ def archive(batch_dir, archive_root, force=False):
         shutil.rmtree(dest)
     shutil.copytree(batch_dir, dest,
                     ignore=shutil.ignore_patterns('dets_*', 'progress.json', '*.tmp.npz',
-                                                  '__pycache__', '.pytest_cache'))
+                                                  '__pycache__', '.pytest_cache',
+                                                  LOCK_NAME, STAGE_NAME))
     files = []
     for p in sorted(dest.rglob('*')):
         if p.is_file() and p.name != 'FROZEN.json':
