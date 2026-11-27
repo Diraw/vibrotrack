@@ -94,6 +94,16 @@ masks/case01/mask.json           方法、中心/半径、参数、哈希、stat
 
 ### 3. 提取一个 case
 
+正式运行前可用同一配置预检前五帧。指定 `--nframes` 可调整帧数。
+
+```bash
+vibrotrack preview --raw frames --out preview-case01 \
+  --config apparatus.yaml --mask masks/case01/interior_mask.png
+```
+
+预检目录须为空或尚未创建。它输出带边界、圆心和方向的 PNG，以及逐帧源文件名、
+检出数和方向有效性统计 `preview_summary.json`。预检在链接和轨迹级壁盘清洗之前结束。
+
 ```bash
 vibrotrack extract \
   --raw frames \
@@ -107,16 +117,27 @@ v2 默认用最近 5 帧检测结果作 prior，仍采用并行 `warmup` 模式�
 
 显式指定 `--prior-mode carry`（或 YAML `run.prior_mode: carry`）才会把实际检测历史按帧序传入下一 shard，空检测帧也占一帧，不重复预热。在该模式中，启用 prior 的单段录像只能顺序检测；仍有 TIFF 读入预取，但 `--workers` 不会增加该段的检测并行度。为避免旧缓存混入，carry 使用独立缓存目录，每次从首帧重算，不跨次续跑缓存。v1 或 YAML `run.prior: false` 不使用检测历史，仍可并行。实际模式写入 `run_config.json` / `dataset.json`。
 
+并行检测中断后可用同一条命令续跑。缓存按有序 TIFF 清单（路径、大小和修改时间）、
+mask 及壁盘文件内容、检测参数、分片和实现版本区分。已完整写出的分片可复用，
+链接会按帧序重放分片。升级后首次运行会重建缺少身份标记的旧缓存。
+检测、壁面抽样和来源记录共用启动时的 TIFF 清单，运行中新增的 TIFF 会在下次提取时纳入。
+提取会锁定同一 case。若进程在替换正式产物时退出，
+下次提取会在读取 YAML 和预检原始 TIFF 前恢复上一套已发布的文件。
+
+自动化可以在 `extract` 上加 `--jsonl`。stdout 每行是一个
+`extract-event/v1` 的 JSON 对象，依次报告 `start`、各阶段的 `progress`，
+最后给出 `result` 或 `error`。普通日志和诊断写到 stderr。
+
 5 帧 prior 会把同一个粒子重复喂进径向拟合（检测阶段约 5 倍种子）。`detector.params.prior_dedupe`
 （默认 0 = 不去重）可以去掉模板峰若干像素内已覆盖的 prior 种子：300 真实帧配对实测 6 px 时
 检测 0.365 → 0.171 s/帧，代价是位置中位偏移 0.009 px、约 2% 帧计数 ±1。是否启用由项目决定，
-复核方式见 `tools/benchmark_prior_dedupe.py`。
+复核方式见 `tools/benchmark_prior_dedupe.py`，该脚本适用于 `wall_band=0` 的提取结果。
 
 产物在 `batch/sequences/case01/`：
 
 ```text
 chunk_00000_17999.npz   逐检测数组 + 帧索引 + 轨迹 id
-dets_*/                 检测缓存（改配置会换目录，不会误用旧缓存）
+dets_*/                 按输入与检测配置区分的内部检测缓存
 run_config.json         这次运行的完整配置 + git commit
 full_summary.json       帧数、检出中位数、有效率、链接率
 dataset.json            自描述元数据（fps、px/mm、mask 哈希、文件哈希）
@@ -157,6 +178,8 @@ vibrotrack archive --batch-dir batch --archive-root archive
 ```
 
 复制到 `archive/<batch>/` 并写 `FROZEN.json`。`dets_*` 检测缓存和 `progress.json` 默认不复制；归档只保留可复现的最终产品。之后只读；要改就新建批次。
+复制期间会锁定纳入归档的 case。若同一 case 正在提取，请等提取结束后重试归档。
+归档发布前会核对暂存副本里的 case、产物哈希、索引和验收记录。若索引或验收已经过期，请重新运行 `index` 和 `accept`。
 
 ### 7. 检测叠加图
 

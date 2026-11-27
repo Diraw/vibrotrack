@@ -18,8 +18,11 @@ import cv2
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import queue, threading
+import zipfile
+import zlib
 
 from .mask import load_mask
+from . import detection_cache as cache_io
 
 ROOT = Path(__file__).resolve().parent
 if __package__:
@@ -75,6 +78,8 @@ def det_tag(case):
             parts.append('wm_' + str(wm))
         if not case.get('prior', True):
             parts.append('noprior')
+    if case.get('detection_cache'):
+        parts.append('c' + case['detection_cache']['digest'][:24])
     return '' if not parts else '_' + '_'.join(parts)
 
 
@@ -110,6 +115,97 @@ def resolve_wall_model(case, src):
     return wm
 
 
+def _detector_params(case):
+    if case.get('detector', 'v2') == 'v1':
+        return {}
+    return {k: v for k, v in case.get('detector_params', {}).items()
+            if k not in ('avoid_r', 'prior_xy', 'static_centres', 'interior_mask', 'bbox')}
+
+
+def _cache_settings(case):
+    src = case.get('mask_path') or None
+    wall_band = int(case.get('wall_band', 0))
+    model = resolve_wall_model(case, src) if wall_band else 'off'
+    avoid_r = float(case.get('avoid_r', 0.0))
+    sidecars = []
+    if model == 'geometry':
+        sidecars.append(Path(src).parent / WALL_FILE)
+    elif avoid_r:
+        parent = Path(str(src)).parent
+        sidecars.extend(parent / name for name in ('boundary.json', 'mask.json'))
+    fingerprints = []
+    for path in sidecars:
+        try:
+            fingerprints.append(cache_io.file_stamp(path))
+        except FileNotFoundError:
+            fingerprints.append((str(path.absolute()), None))
+    return {
+        'detector': case.get('detector', 'v2'),
+        'detector_params': _detector_params(case),
+        'detector_defaults': D2.DEFAULTS if case.get('detector', 'v2') == 'v2' else {},
+        'scale_levels': case['scale_levels'],
+        'strict_io': bool(case.get('strict_io', False)),
+        'shape': case.get('shape'),
+        'mask': cache_io.file_stamp(src) if src else None,
+        'wall': {'model': model, 'band': wall_band, 'avoid_r': avoid_r,
+                 'dilate_px': int(case.get('wall_dilate', 40)),
+                 'tol_px': float(case.get('wall_tol_px', 6.0)),
+                 'particle_radius_px': float(case.get('particle_radius_px', 36.98)),
+                 'sidecars': fingerprints},
+        'prior': bool(case.get('prior', True)),
+        'prior_mode': case.get('prior_mode', 'warmup'),
+        'prior_frames': max(1, int(case.get('prior_frames', 1))),
+        'shard_overlap': int(case.get('shard_overlap', 5)) if case.get('prior_mode', 'warmup') == 'warmup' else 0,
+    }
+
+
+def prepare_detection_cache(case, files, *, shard_size):
+    """Pin the detector inputs and ordered source metadata for this case."""
+    sources = cache_io.frame_stamps(files)
+    source_digest = cache_io.digest(sources)
+    settings = _cache_settings(case)
+    overlap = settings['shard_overlap']
+    shards = {}
+    for lo in range(0, len(sources), shard_size):
+        hi = min(lo + shard_size, len(sources))
+        file_lo = max(0, lo - overlap)
+        shards[lo] = (hi, file_lo, cache_io.digest(sources[file_lo:hi]))
+    case['detection_cache'] = {
+        'digest': cache_io.digest({
+            'format': 'detection-cache/v1',
+            'implementation': cache_io.implementation(),
+            'settings': settings,
+            'sources': source_digest,
+            'shard_size': shard_size,
+        }),
+        'sources': source_digest,
+        'settings': cache_io.digest(settings),
+        'shards': shards,
+    }
+
+
+def _verify_cache_inputs(case, files, lo, hi, file_lo):
+    cache = case['detection_cache']
+    actual = (hi, file_lo, cache_io.digest(cache_io.frame_stamps(files)))
+    if actual != cache['shards'].get(lo):
+        raise ValueError('source frames changed during extraction for shard [%d,%d)' % (lo, hi))
+    validate_detection_cache(case)
+
+
+def validate_detection_cache(case, *, files=None):
+    cache = case.get('detection_cache')
+    if not cache:
+        return
+    if cache_io.digest(_cache_settings(case)) != cache['settings']:
+        raise ValueError('detector settings, mask or wall inputs changed during extraction')
+    if files is not None and cache_io.digest(cache_io.frame_stamps(files)) != cache['sources']:
+        raise ValueError('source frames changed during extraction')
+
+
+_CACHE_READ_ERRORS = (OSError, ValueError, TypeError, EOFError, KeyError,
+                      zipfile.BadZipFile, zlib.error)
+
+
 def shard_task(args, *, history=None):
     """Detect one shard; in carry mode advance the caller's bounded xy history."""
     case, lo, hi = args[:3]
@@ -139,11 +235,17 @@ def shard_task(args, *, history=None):
         raise ValueError('shard files do not cover [%d,%d): got %d files'
                          % (file_lo, hi, len(files)))
     dst = det_path(case, lo, hi)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    # A carry part depends on all its predecessors. Replaying is safer than
-    # accepting a cache hit without provenance for that entire causal chain.
-    if dst.exists() and not carry:
-        return {'case': cid, 'lo': lo, 'hi': hi, 'status': 'cached'}
+    cache = case.get('detection_cache')
+    # A carry shard must replay to advance the actual causal history.
+    if cache and not carry and dst.exists():
+        try:
+            part = load_det_part(case, lo, hi)
+        except _CACHE_READ_ERRORS:
+            pass
+        else:
+            _verify_cache_inputs(case, files, lo, hi, file_lo)
+            return {'case': cid, 'lo': lo, 'hi': hi, 'status': 'cached',
+                    'frames': hi - lo, 'median_count': float(np.median(np.diff(part['frame_offsets'])))}
     interior, src = load_mask(case.get('mask_path'), case.get('shape'), required=True)
     case['mask_source'] = src or 'full_frame'
     wall_band = int(case.get('wall_band', 0))
@@ -195,13 +297,13 @@ def shard_task(args, *, history=None):
     bbox = X.mask_bbox(mask)
     strict_io = bool(case.get('strict_io', False))
 
+    params = _detector_params(case)
+
     def detect_frame(im, prior=None):
         if detector == 'v1':
             d = X.detect(im, mask, dist, bbox=bbox)
             d['outside_mask'] = np.zeros(len(d['xy_px']), np.uint8)
             return d
-        params = {k: v for k, v in case.get('detector_params', {}).items()
-                  if k not in ('avoid_r', 'prior_xy', 'static_centres', 'interior_mask', 'bbox')}
         d, _info = D2.frame(im, mask, dist, bbox=bbox, interior_mask=interior,
                             static_centres=static_centres, avoid_r=avoid_r,
                             prior_xy=prior, **params)
@@ -253,9 +355,12 @@ def shard_task(args, *, history=None):
     offsets = np.concatenate([[0], np.cumsum([len(r['xy_px']) for r in out_recs])])
     payload['frame_ids'] = np.arange(lo, hi)
     payload['frame_offsets'] = offsets
-    tmp = dst.with_suffix('.tmp.npz')
-    np.savez_compressed(tmp, **payload)
-    tmp.replace(dst)
+    if cache:
+        payload['_cache_digest'] = np.array(cache['digest'])
+    with cache_io.atomic_file(dst) as tmp:
+        np.savez_compressed(tmp, **payload)
+        if cache:
+            _verify_cache_inputs(case, files, lo, hi, file_lo)
     return {'case': cid, 'lo': lo, 'hi': hi, 'status': 'ok', 'seconds': time.time() - t0,
             'frames': hi - lo, 'median_count': float(np.median([len(r['xy_px']) for r in out_recs]))}
 
@@ -265,8 +370,35 @@ def det_path(case, lo, hi):
 
 
 def load_det_part(case, lo, hi):
-    with np.load(det_path(case, lo, hi)) as z:
-        return {k: z[k] for k in z.files}
+    path = det_path(case, lo, hi)
+    cache = case.get('detection_cache')
+    with np.load(path, allow_pickle=False) as z:
+        if cache:
+            checksum = z['_cache_digest']
+            if checksum.ndim or checksum.item() != cache['digest']:
+                raise ValueError('detection cache identity mismatch: %s' % path)
+        part = {k: z[k] for k in z.files if k != '_cache_digest'}
+
+    frames = part['frame_ids']
+    offsets = part['frame_offsets']
+    xy = part['xy_px']
+    if (frames.dtype.kind not in 'iu' or not np.array_equal(frames, np.arange(lo, hi))
+            or offsets.shape != (hi - lo + 1,) or offsets.dtype.kind not in 'iu'
+            or offsets[0] != 0 or np.any(offsets[1:] < offsets[:-1])
+            or xy.shape != (int(offsets[-1]), 2) or xy.dtype.kind != 'f'
+            or not np.isfinite(xy).all()):
+        raise ValueError('invalid frame IDs, offsets or centres in detection shard: %s' % path)
+    if cache:
+        for key in (*FIELD_KEYS, *OPT_KEYS):
+            if key == 'xy_px':
+                continue
+            values = part[key]
+            if values.shape != (len(xy),) or values.dtype.kind not in 'biuf':
+                raise ValueError('invalid %s in detection shard: %s' % (key, path))
+        radii = part['radius_px']
+        if not np.isfinite(radii).all() or np.any(radii <= 0):
+            raise ValueError('invalid radius_px in detection shard: %s' % path)
+    return part
 
 
 def new_link_state(case=None):
@@ -379,7 +511,7 @@ def _apply_drop(payload, keep):
     fr = np.repeat(np.arange(nf), np.diff(payload['frame_offsets']))[keep]
     for k in list(payload.keys()):
         v = payload[k]
-        if isinstance(v, np.ndarray) and v.shape[:1] == (n,):
+        if k not in ('frame_ids', 'frame_offsets') and isinstance(v, np.ndarray) and v.shape[:1] == (n,):
             payload[k] = v[keep]
     counts = np.bincount(fr, minlength=nf)
     payload['frame_offsets'] = np.concatenate([[0], np.cumsum(counts)]).astype(np.int32)
@@ -463,21 +595,38 @@ def drop_static_objects(payload, std_map, thresh=10.0, radius=25,
     return payload, int(bad.sum())
 
 
-def temporal_std(case, cid, n=60):
+def temporal_std(case, cid, n=60, *, source_files=None):
     """Mean per-pixel temporal std over the recording, cached next to the chunk."""
-    dst = out_root(case) / cid / 'temporal_std.npy'
-    if dst.exists():
-        return np.load(dst)
-    files = X.files_for(case)
+    files = X.files_for(case) if source_files is None else source_files
     if not files:
         return None
-    idx = np.linspace(0, len(files) - 1, min(n, len(files))).astype(int)
-    acc = []
+    indices = np.linspace(0, len(files) - 1, min(n, len(files))).astype(int)
+    sampled = [files[i] for i in indices]
+    sources = cache_io.frame_stamps(sampled)
     levels = case.get('scale_levels', [128.0, 28224.0])
-    for i in idx:
-        acc.append(X.read_image(files[int(i)], levels).astype(np.float32))
-    std = np.stack(acc).std(0)
-    np.save(dst, std)
+    digest = cache_io.digest({
+        'format': 'temporal-std/v1',
+        'implementation': cache_io.implementation(),
+        'sources': sources,
+        'levels': levels,
+    })
+    dst = out_root(case) / cid / 'dets_temporal' / (digest + '.npy')
+    if dst.exists():
+        try:
+            std = np.load(dst, allow_pickle=False)
+            expected_shape = case.get('shape')
+            if not isinstance(std, np.ndarray):
+                std.close()
+            elif (std.ndim == 2 and (expected_shape is None or std.shape == tuple(expected_shape))
+                    and std.dtype == np.float32 and np.isfinite(std).all()):
+                return std
+        except _CACHE_READ_ERRORS:
+            pass
+    std = np.stack([X.read_image(path, levels).astype(np.float32) for path in sampled]).std(0)
+    if cache_io.frame_stamps(sampled) != sources:
+        raise ValueError('source frames changed during temporal standard deviation sampling')
+    with cache_io.atomic_file(dst) as tmp:
+        np.save(tmp, std)
     return std
 
 def _sha1(path):
@@ -492,20 +641,20 @@ def _sha1(path):
         return None
 
 
-def write_run_config(case, cid, model):
+def write_run_config(case, cid, model, *, output_dir=None, source_files=None):
     """Everything needed to answer "which code, which settings, which data made this chunk".
 
     Written next to the chunk as run_config.json. The git commit is included because the
     contract requires any quoted number to name it, and because a worktree can be dirty.
     """
     import subprocess
-    out = out_root(case) / cid
+    out = Path(output_dir) if output_dir is not None else out_root(case) / cid
     out.mkdir(parents=True, exist_ok=True)
-    files = []
-    try:
-        files = [str(f) for f in X.files_for(case)]
-    except Exception:
-        pass
+    if source_files is None:
+        try:
+            source_files = X.files_for(case)
+        except Exception:
+            source_files = ()
     mask, src = None, None
     try:
         _, src = load_mask(case.get('mask_path'), case.get('shape'))
@@ -532,22 +681,32 @@ def write_run_config(case, cid, model):
         wall_static_std=bool(case.get('wall_static_std', True)),
         wall_static_thresh=float(case.get('wall_static_thresh', 10.0)),
         detector_defaults={k: float(v) for k, v in D2.DEFAULTS.items()},
+        detection_cache_digest=case.get('detection_cache', {}).get('digest'),
         nframes=int(case.get('nframes', 0)), scale_levels=list(case.get('scale_levels', [])),
         boundary=case.get('boundary'), mask=mask, mask_sha1=_sha1(mask) if mask else None,
         boundary_json_sha1=_sha1(Path(str(mask)).parent / 'boundary.json') if mask else None,
         wall_disks_sha1=_sha1(Path(str(mask)).parent / WALL_FILE) if mask else None,
-        n_input_files=len(files), first_file=files[0] if files else None,
-        last_file=files[-1] if files else None, git=git)
+        n_input_files=len(source_files), first_file=str(source_files[0]) if source_files else None,
+        last_file=str(source_files[-1]) if source_files else None, git=git)
     (out / 'run_config.json').write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding='utf8')
     return cfg
 
 
-def finish_link(case, state):
+def finish_link(case, state, *, output_dir=None, source_files=None):
     cid = case['id']
     records = state['records']
-    fids = np.asarray(state['frame_ids'], dtype=np.int64)
-    if not len(records):
+    if not records:
         return {'case': cid, 'status': 'no_detections'}
+    if output_dir is None:
+        from .case_output import case_lock, recover_case, stage_case
+
+        case_dir = out_root(case) / cid
+        with case_lock(case_dir):
+            recover_case(case_dir)
+            with stage_case(case_dir) as staging:
+                return finish_link(case, state, output_dir=staging, source_files=source_files)
+    output_dir = Path(output_dir)
+    fids = np.asarray(state['frame_ids'], dtype=np.int64)
     if len(fids) != len(records) or not np.all(np.diff(fids) == 1):
         raise ValueError('shard frame ids are not contiguous after sorting')
     keys = list(records[0].keys())
@@ -569,17 +728,19 @@ def finish_link(case, state):
         # geometry branch: the discs are already excluded by the measured wall map, so the
         # statistical rule is not needed (kept available as an independent cross-check)
         if model == 'empirical' and case.get('wall_static_std', True):
-            std_map = temporal_std(case, cid)
+            std_map = temporal_std(case, cid, source_files=source_files)
             if std_map is not None:
                 payload, n_static = drop_static_objects(
                     payload, std_map, float(case.get('wall_static_thresh', 10.0)))
-    for old in (out_root(case) / cid).glob('chunk_*.npz'):
-        old.unlink()
-    dst = out_root(case) / cid / f'chunk_{fids[0]:05d}_{fids[-1]:05d}.npz'
-    tmp = dst.with_suffix('.tmp.npz')
-    np.savez_compressed(tmp, **payload)
-    tmp.replace(dst)
-    write_run_config(case, cid, model)
+    dst = output_dir / f'chunk_{fids[0]:05d}_{fids[-1]:05d}.npz'
+    np.savez_compressed(dst, **payload)
+    with np.load(dst, allow_pickle=False) as saved:
+        offsets = saved['frame_offsets']
+        if (not np.array_equal(saved['frame_ids'], fids)
+                or len(offsets) != len(fids) + 1 or offsets[0] != 0
+                or np.any(np.diff(offsets) < 0) or offsets[-1] != len(payload['xy_px'])):
+            raise ValueError(f'invalid frame indices in staged chunk: {dst}')
+    write_run_config(case, cid, model, output_dir=output_dir, source_files=source_files)
     # payload['frame_offsets'] was rebuilt by the wall drops; the local `offsets` is stale
     counts_per_frame = np.diff(payload['frame_offsets'])
     status = dict(case=cid, mode='full', status='completed', source_frame_count=len(fids),
@@ -595,8 +756,8 @@ def finish_link(case, state):
                   segments=int(len(np.unique(payload['segment_id']))),
                   gap_closed=int(np.sum(payload['gap_frames'] > 1)),
                   elapsed_seconds=None)
-    X.dump(out_root(case) / cid / 'full_summary.json', status)
-    X.dump(out_root(case) / cid / 'progress.json', status)
+    X.dump(output_dir / 'full_summary.json', status)
+    X.dump(output_dir / 'progress.json', status)
     return status
 
 

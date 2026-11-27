@@ -28,10 +28,13 @@ import numpy as np
 import scipy
 
 from vibrotrack import detect, detect2
+from vibrotrack.detection_cache import open_recorded_shard, recorded_shard_directory
 from vibrotrack.mask import load_mask
 
 
 REPO = Path(__file__).resolve().parents[1]
+VETO_ANCHOR = '        bright_t = _brightness(im, xy[cand])'
+VETO_REPLACEMENT = '        theta_t, ok_t, off_t, area_t, bright_t = _marker(im, xy[cand])'
 ANCHOR = '    theta, angle_valid, offset, area, bright = _marker(im, xy_s)'
 REPLACEMENT = (
     '    marker_indices = np.searchsorted(cand, sel)\n'
@@ -113,11 +116,12 @@ def first_difference(left, right, path=''):
 
 
 def make_candidate():
-    """Apply only benchmark_detector.py's existing marker-reuse transformation."""
+    """Compute marker results in the veto pass and reuse them after selection."""
     reference_source = inspect.getsource(detect2.frame)
-    if reference_source.count(ANCHOR) != 1:
-        raise RuntimeError('prototype anchor changed; inspect detect2.frame first')
-    candidate_source = reference_source.replace(ANCHOR, REPLACEMENT)
+    if reference_source.count(ANCHOR) != 1 or reference_source.count(VETO_ANCHOR) != 1:
+        raise RuntimeError('prototype anchors changed; inspect detect2.frame first')
+    candidate_source = reference_source.replace(VETO_ANCHOR, VETO_REPLACEMENT)
+    candidate_source = candidate_source.replace(ANCHOR, REPLACEMENT)
     namespace = dict(vars(detect2))
     namespace['__name__'] = 'vibrotrack._isolated_marker_reuse_benchmark'
     exec(compile(candidate_source, '<isolated-marker-reuse-prototype>', 'exec'), namespace)
@@ -128,6 +132,7 @@ def make_candidate():
         'reference_frame_source_sha256': hashlib.sha256(reference_source.encode()).hexdigest(),
         'candidate_frame_source_sha256': hashlib.sha256(candidate_source.encode()).hexdigest(),
         'old': ANCHOR, 'new': REPLACEMENT, 'isolated_globals': True,
+        'veto_old': VETO_ANCHOR, 'veto_new': VETO_REPLACEMENT,
         'production_function_unchanged': namespace['frame'] is not detect2.frame,
     }
 
@@ -204,9 +209,10 @@ def parse_windows(text):
     return result
 
 
-def load_seeds(case, windows, prior_frames, shard_overlap):
+def load_seeds(case, windows, prior_frames, shard_overlap, *, run_config=None):
     """Use pre-link det shards, not linked/filtered chunks, for all 5 prior frames."""
-    directory = case / f'dets_v2_p{prior_frames}_o{shard_overlap}'
+    directory, digest = recorded_shard_directory(
+        case, f'dets_v2_p{prior_frames}_o{shard_overlap}', run_config=run_config)
     paths = sorted(directory.glob('det_*.npz'))
     if not paths:
         raise FileNotFoundError('original detector shards required: ' + str(directory))
@@ -216,7 +222,7 @@ def load_seeds(case, windows, prior_frames, shard_overlap):
         _, lo, hi = path.stem.split('_')
         if not any(int(lo) <= fid <= int(hi) for fid in needed):
             continue
-        with np.load(path, allow_pickle=False) as z:
+        with open_recorded_shard(path, digest) as z:
             ids, offsets, xy = z['frame_ids'], z['frame_offsets'], z['xy_px']
             selected = []
             for i, fid in enumerate(ids):
@@ -258,7 +264,8 @@ def source_hashes():
     paths = [REPO / 'tools' / 'benchmark_sequential.py',
              REPO / 'tools' / 'benchmark_detector.py']
     paths.extend(REPO / 'src' / 'vibrotrack' / name for name in
-                 ('detect.py', 'detect2.py', 'fast_tiff.py', 'mask.py', 'shards.py'))
+                 ('detect.py', 'detect2.py', 'fast_tiff.py', 'mask.py',
+                  'shards.py', 'detection_cache.py'))
     return {str(path.relative_to(REPO)): file_sha256(path) for path in paths}
 
 
@@ -290,7 +297,7 @@ def run(args):
         dataset = json.loads(dataset_path.read_text(encoding='utf8'))
         if cfg.get('detector') != 'v2' or cfg.get('wall_model') != 'off' or cfg.get('wall_band'):
             raise ValueError('this deliberately narrow tool requires v2 + wall_model=off + wall_band=0')
-        if cfg.get('prior', True) is not True:
+        if cfg.get('prior_mode') == 'off' or cfg.get('prior', True) is not True:
             raise ValueError('rolling-prior regression requires prior enabled')
         windows = parse_windows(args.windows)
         prior_frames = max(1, int(cfg['prior_frames']))
@@ -325,7 +332,8 @@ def run(args):
         if str(files[0].resolve()) != str(Path(cfg['first_file']).resolve()) or \
                 str(files[-1].resolve()) != str(Path(cfg['last_file']).resolve()):
             raise ValueError('raw file ordering/endpoints differ from archived sequence')
-        seeds, seed_sources = load_seeds(case, windows, prior_frames, int(cfg['shard_overlap']))
+        seeds, seed_sources = load_seeds(
+            case, windows, prior_frames, int(cfg['shard_overlap']), run_config=cfg)
         report.update(
             case=str(case), raw=str(args.raw.resolve()), mask=str(mask_path),
             config=cfg, run_config_sha256=file_sha256(cfg_path),

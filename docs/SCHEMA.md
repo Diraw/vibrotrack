@@ -90,6 +90,7 @@ null rather than inventing one.
 
 `accepted` is true only if every sequence passes. `gate.checks` lists the exact checks.
 A failed sequence keeps its `problems` array; the report is written even when rejected.
+New reports include `index_sha256`, the hash of the exact `index.json` read for acceptance.
 
 ## Hash policy
 
@@ -97,8 +98,9 @@ A failed sequence keeps its `problems` array; the report is written even when re
   (`--allow-missing-geometry` indexes it with a warning instead; `accept`/`verify` still fail).
 - `verify` re-hashes `chunk_*.npz`, `geometry.json`, `full_summary.json`,
   `run_config.json`, `dataset.json` and compares with `index.json`.
-- `archive` copies the batch and writes `FROZEN.json` with a fresh hash of every file.
-  Never edit a frozen directory; create a new batch instead.
+- `archive` stages the batch and checks case membership, indexed product hashes and,
+  when recorded, the acceptance report's `index_sha256` before writing `FROZEN.json`.
+  It records a fresh hash of every archived product. Create a new batch when updating frozen data.
 
 ## Review / curation products
 
