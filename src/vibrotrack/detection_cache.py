@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 
 import cv2
@@ -51,6 +52,36 @@ def implementation():
         'pillow': PIL.__version__,
         'scipy': scipy.__version__,
     }
+
+
+def recorded_shard_directory(case_dir, legacy_name, *, run_config=None):
+    """Locate the archive named by run metadata, or the legacy layout."""
+    if run_config is None:
+        path = case_dir / 'run_config.json'
+        run_config = json.loads(path.read_text(encoding='utf8')) if path.exists() else {}
+    expected = run_config.get('detection_cache_digest')
+    if expected is None:
+        return case_dir / legacy_name, None
+    if not isinstance(expected, str) or re.fullmatch(r'[0-9a-f]{64}', expected) is None:
+        raise ValueError('invalid detection_cache_digest in %s' % (case_dir / 'run_config.json'))
+
+    matches = [path for path in case_dir.glob(f'dets_*_c{expected[:24]}') if path.is_dir()]
+    if not matches:
+        raise FileNotFoundError(f'recorded detection cache {expected} not found in {case_dir}')
+    if len(matches) != 1:
+        raise ValueError(f'ambiguous directories for detection cache {expected} in {case_dir}')
+    return matches[0], expected
+
+
+@contextmanager
+def open_recorded_shard(path, expected):
+    """Read a shard and verify its full digest when the run recorded one."""
+    with np.load(path, allow_pickle=False) as shard:
+        if expected is not None:
+            stored = shard['_cache_digest'] if '_cache_digest' in shard.files else None
+            if stored is None or stored.ndim != 0 or stored.item() != expected:
+                raise ValueError(f'detection cache identity mismatch: {path}')
+        yield shard
 
 
 @contextmanager

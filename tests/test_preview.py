@@ -100,6 +100,32 @@ def test_extract_jsonl_reports_progress_result_and_keeps_diagnostics_off_stdout(
     assert 'dropping 1 trailing 0-byte frame' in captured.err
 
 
+@pytest.mark.parametrize('no_link', [False, True])
+def test_extract_jsonl_result_counts_frames_processed_with_shard_limit(tmp_path, capsys, no_link):
+    frames, config = _make_case(tmp_path)
+    out = tmp_path / 'batch'
+    options = ['--no-link'] if no_link else []
+    assert cli.main(['extract', '--jsonl', '--shard', '2', '--limit-shards', '1',
+                     '--raw', str(frames), '--config', str(config), '--out', str(out),
+                     '--base-dir', str(tmp_path), *options]) == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    result = events[-1]
+    assert result['event'] == 'result'
+    assert result['qc_status'] == ('detected_only' if no_link else 'extracted')
+    assert result['n_frames'] == 2
+
+    case_dir = out / 'sequences' / frames.name
+    dataset = json.loads((case_dir / 'dataset.json').read_text(encoding='utf-8'))
+    assert dataset['n_frames'] == 6
+    chunks = list(case_dir.glob('chunk_*.npz'))
+    if no_link:
+        assert not chunks
+    else:
+        chunk, = chunks
+        with np.load(chunk, allow_pickle=False) as product:
+            assert product['frame_ids'].tolist() == [0, 1]
+
+
 def test_extract_jsonl_reports_runtime_error(tmp_path, capsys):
     _, config = _make_case(tmp_path)
     assert cli.main(['extract', '--jsonl', '--raw', str(tmp_path / 'absent'),

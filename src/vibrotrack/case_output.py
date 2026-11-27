@@ -19,10 +19,10 @@ _guard = Lock()
 
 @contextmanager
 def case_lock(case_dir):
-    """Hold a process-wide OS lock, including during recovery."""
+    """Exclude extraction and archive copying for the same case."""
     case_dir = Path(case_dir).resolve()
     case_dir.mkdir(parents=True, exist_ok=True)
-    message = f'another extraction is running for {case_dir}'
+    message = f'another extraction or archive is running for {case_dir}'
     with _guard:
         if case_dir in _locked:
             raise RuntimeError(message)

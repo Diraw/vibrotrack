@@ -107,8 +107,12 @@ def _cmd_extract(args):
 
 def _extract_jsonl(args):
     stdout = sys.stdout
+    processed_frames = 0
 
     def emit(record):
+        nonlocal processed_frames
+        if record['event'] == 'progress' and record['stage'] == 'detect':
+            processed_frames = record['done']
         print(json.dumps({'schema': 'extract-event/v1', **record}, allow_nan=False),
               file=stdout, flush=True)
 
@@ -129,7 +133,7 @@ def _extract_jsonl(args):
               'message': str(exc)})
         return 1
     emit({'event': 'result', 'status': 'complete', 'dataset_id': rec['dataset_id'],
-          'case': rec['case'], 'n_frames': rec['n_frames'], 'output': str(case_dir),
+          'case': rec['case'], 'n_frames': processed_frames, 'output': str(case_dir),
           'qc_status': rec['qc']['status']})
     return 0
 

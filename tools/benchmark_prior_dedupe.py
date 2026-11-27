@@ -29,6 +29,7 @@ import scipy
 from scipy.spatial import cKDTree
 
 from vibrotrack import detect, detect2
+from vibrotrack.detection_cache import open_recorded_shard, recorded_shard_directory
 from vibrotrack.mask import load_mask
 
 
@@ -75,19 +76,21 @@ def parse_windows(text):
     return out
 
 
-def load_seeds(case, windows, prior_frames, shard_overlap):
+def load_seeds(case, windows, prior_frames, shard_overlap, *, run_config=None):
     """Original pre-link det-shard xy arrays for the frames before each window."""
-    directory = case / f'dets_v2_p{prior_frames}_o{shard_overlap}'
+    directory, digest = recorded_shard_directory(
+        case, f'dets_v2_p{prior_frames}_o{shard_overlap}', run_config=run_config)
     needed = {fid for lo, _ in windows for fid in range(max(0, lo - prior_frames), lo)}
     seeds = {}
     sources = []
     for path in sorted(directory.glob('det_*.npz')):
-        with np.load(path) as z:
+        with open_recorded_shard(path, digest) as z:
             ids, offsets, xy = z['frame_ids'], z['frame_offsets'], z['xy_px']
             for i, fid in enumerate(ids):
                 if int(fid) in needed:
                     seeds[int(fid)] = xy[int(offsets[i]):int(offsets[i + 1])].copy()
                     sources.append({'frame': int(fid), 'file': path.name,
+                                    'path': str(path.resolve()),
                                     'rows': int(offsets[i + 1] - offsets[i]),
                                     'xy_px_sha256': array_digest(
                                         {'xy_px': seeds[int(fid)]})})
@@ -151,7 +154,8 @@ def run(args):
     if str(files[0].resolve()) != str(Path(cfg['first_file']).resolve()) or \
             str(files[-1].resolve()) != str(Path(cfg['last_file']).resolve()):
         raise ValueError('raw file ordering/endpoints differ from archived sequence')
-    seeds, seed_sources = load_seeds(case, windows, prior_frames, int(cfg['shard_overlap']))
+    seeds, seed_sources = load_seeds(
+        case, windows, prior_frames, int(cfg['shard_overlap']), run_config=cfg)
 
     arms = {'reference': 0.0, 'dedupe': float(args.dedupe)}
     report = {

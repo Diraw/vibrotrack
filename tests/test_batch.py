@@ -10,8 +10,9 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from vibrotrack import batch
+from vibrotrack import batch, case_output, schema
 
 
 def _write_case(batch_dir, name='syn', counts=(2, 1)):
@@ -104,3 +105,52 @@ def test_geometry_hash_is_part_of_the_gate(tmp_path):
     assert report['accepted'] is False
     problems = [p for r in report['sequences'] for p in r['problems']]
     assert any('geometry sha256' in p for p in problems)
+
+
+def test_archive_holds_publication_locks_during_copy(tmp_path, monkeypatch):
+    batch_dir = tmp_path / 'batch'
+    case = _write_case(batch_dir)
+    _write_geometry(case)
+    chunk = next(case.glob('chunk_*.npz'))
+    manifest = schema.read_json(case / 'dataset.json')
+    manifest['outputs'] = schema.outputs_record(case, [chunk.name])
+    schema.write_json(case / 'dataset.json', manifest)
+    batch.build_index(batch_dir)
+    assert batch.accept(batch_dir)['accepted']
+    copytree = batch.shutil.copytree
+
+    def interleave_copy(src, dest, *args, **kwargs):
+        if Path(src) == batch_dir:
+            with pytest.raises(RuntimeError, match='another extraction or archive'):
+                with case_output.case_lock(case):
+                    pass
+            _write_case(batch_dir, name='late')
+        return copytree(src, dest, *args, **kwargs)
+
+    monkeypatch.setattr(batch.shutil, 'copytree', interleave_copy)
+    dest, frozen = batch.archive(batch_dir, tmp_path / 'archives')
+
+    archived = dest / 'sequences' / case.name
+    assert schema.read_json(archived / 'dataset.json')['outputs'][0]['sha256'] == (
+        schema.sha256(archived / chunk.name))
+    assert not (dest / 'sequences' / 'late').exists()
+    assert not any(case_output.LOCK_NAME in record['path'] for record in frozen['files'])
+
+
+@pytest.mark.parametrize('interrupted', [False, True])
+def test_archive_force_preserves_old_copy_when_source_case_is_busy(tmp_path, interrupted):
+    batch_dir = tmp_path / 'batch'
+    case = _write_case(batch_dir)
+    archive_root = tmp_path / 'archives'
+    previous = archive_root / batch_dir.name / 'FROZEN.json'
+    schema.write_json(previous, {'generation': 'previous'})
+
+    if interrupted:
+        schema.write_json(case / case_output.STAGE_NAME / 'prepared.json', {})
+        with pytest.raises(RuntimeError, match='publication interrupted'):
+            batch.archive(batch_dir, archive_root, force=True)
+    else:
+        with case_output.case_lock(case):
+            with pytest.raises(RuntimeError, match='another extraction or archive'):
+                batch.archive(batch_dir, archive_root, force=True)
+    assert schema.read_json(previous) == {'generation': 'previous'}

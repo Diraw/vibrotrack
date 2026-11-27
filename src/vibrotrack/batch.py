@@ -18,12 +18,13 @@ every product and re-runs ``accept``.
 from __future__ import annotations
 
 import shutil
+from contextlib import ExitStack
 from pathlib import Path
 
 import numpy as np
 
 from . import schema
-from .case_output import LOCK_NAME, STAGE_NAME, require_published
+from .case_output import LOCK_NAME, STAGE_NAME, case_lock, require_published
 
 REQUIRED = [
     'xy_px', 'radius_px', 'theta_rad', 'center_valid', 'angle_valid',
@@ -309,8 +310,9 @@ def archive(batch_dir, archive_root, force=False):
     """Copy a verified batch to an immutable archive directory and write FROZEN.json."""
     batch_dir = Path(batch_dir).resolve()
     archive_root = Path(archive_root).resolve()
-    for seq_dir in (batch_dir / 'sequences').glob('*'):
-        require_published(seq_dir)
+    seq_root = batch_dir / 'sequences'
+    cases = sorted(p for p in seq_root.glob('*') if p.is_dir())
+    case_names = {case.name for case in cases}
     acc_path = batch_dir / 'acceptance.json'
     if not force:
         if not acc_path.exists():
@@ -321,12 +323,27 @@ def archive(batch_dir, archive_root, force=False):
     dest = archive_root / batch_dir.name
     if dest.exists() and not force:
         raise FileExistsError('archive target already exists: %s (use --force to replace)' % dest)
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(batch_dir, dest,
-                    ignore=shutil.ignore_patterns('dets_*', 'progress.json', '*.tmp.npz',
-                                                  '__pycache__', '.pytest_cache',
-                                                  LOCK_NAME, STAGE_NAME))
+    ignore_transient = shutil.ignore_patterns('dets_*', 'progress.json', '*.tmp.npz',
+                                              '__pycache__', '.pytest_cache', LOCK_NAME, STAGE_NAME)
+
+    def ignore(source, names):
+        ignored = ignore_transient(source, names)
+        if Path(source) == seq_root:
+            # Cases started after the snapshot do not have a lock in this copy.
+            ignored.update(name for name in names
+                           if name not in case_names and (seq_root / name).is_dir())
+        return ignored
+
+    with ExitStack() as locks:
+        for case in cases:
+            locks.enter_context(case_lock(case))
+            require_published(case)
+        if {p.name for p in seq_root.glob('*') if p.is_dir()} != case_names:
+            raise RuntimeError(f'case set changed while preparing archive: {seq_root}. Retry archive.')
+        if force and dest.exists():
+            shutil.rmtree(dest)
+        # Keep the source chunks and manifests on one generation throughout the copy.
+        shutil.copytree(batch_dir, dest, ignore=ignore)
     files = []
     for p in sorted(dest.rglob('*')):
         if p.is_file() and p.name != 'FROZEN.json':

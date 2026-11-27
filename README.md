@@ -177,6 +177,7 @@ vibrotrack archive --batch-dir batch --archive-root archive
 ```
 
 复制到 `archive/<batch>/` 并写 `FROZEN.json`。`dets_*` 检测缓存和 `progress.json` 默认不复制；归档只保留可复现的最终产品。之后只读；要改就新建批次。
+复制期间会锁定纳入归档的 case。若同一 case 正在提取，请等提取结束后重试归档。
 
 ### 7. 检测叠加图
 
