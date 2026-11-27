@@ -65,7 +65,7 @@ def _load_case_xy(case_dir, with_radius=False):
     return xy, counts
 
 
-def _extract(args, **run_options):
+def _load_extract_config(args):
     cfg = load_config(args.config, base_dir=args.base_dir)
     for key, value in (('fps', args.fps), ('px_per_mm', args.px_per_mm),
                        ('diameter_mm', args.diameter_mm), ('workers', args.workers),
@@ -81,9 +81,12 @@ def _extract(args, **run_options):
         cfg.wall_band = int(args.wall_band)
     if args.mask:
         cfg.boundary_mask = Path(args.mask).expanduser().resolve()
-    case_id = args.case_id or Path(args.raw).name
+    return cfg
+
+
+def _extract(args, case_id, **run_options):
     rec = pipeline.run_case(
-        args.raw, args.out, cfg, case_id=case_id, nframes=args.nframes,
+        args.raw, args.out, lambda: _load_extract_config(args), case_id=case_id, nframes=args.nframes,
         workers=args.workers, shard=args.shard, detector=args.detector,
         linker=args.linker, wall_band=args.wall_band, wall_model=args.wall_model,
         strict_io=args.strict_io, no_link=args.no_link, limit_shards=args.limit_shards,
@@ -95,9 +98,10 @@ def _extract(args, **run_options):
 
 
 def _cmd_extract(args):
+    case_id = args.case_id if args.case_id is not None else Path(args.raw).name
     if args.jsonl:
-        return _extract_jsonl(args)
-    rec, case_dir = _extract(args)
+        return _extract_jsonl(args, case_id)
+    rec, case_dir = _extract(args, case_id)
     print('dataset: %s' % rec['dataset_id'])
     print('case:    %s' % rec['case'])
     print('frames:  %s' % rec['n_frames'])
@@ -105,7 +109,7 @@ def _cmd_extract(args):
     return 0
 
 
-def _extract_jsonl(args):
+def _extract_jsonl(args, case_id):
     stdout = sys.stdout
     processed_frames = 0
 
@@ -116,13 +120,12 @@ def _extract_jsonl(args):
         print(json.dumps({'schema': 'extract-event/v1', **record}, allow_nan=False),
               file=stdout, flush=True)
 
-    emit({'event': 'start', 'case': args.case_id or Path(args.raw).name,
-          'raw': args.raw, 'output': args.out})
+    emit({'event': 'start', 'case': case_id, 'raw': args.raw, 'output': args.out})
     try:
         # File discovery emits warnings directly. Keep them and the existing
         # human-readable progress off the JSONL stream.
         with redirect_stdout(sys.stderr):
-            rec, case_dir = _extract(args, events=emit)
+            rec, case_dir = _extract(args, case_id, events=emit)
     except KeyboardInterrupt:
         emit({'event': 'error', 'status': 'interrupted', 'error_type': 'KeyboardInterrupt',
               'message': 'Extraction interrupted'})

@@ -122,7 +122,7 @@ mask 及壁盘文件内容、检测参数、分片和实现版本区分。已完
 链接会按帧序重放分片。升级后首次运行会重建缺少身份标记的旧缓存。
 检测、壁面抽样和来源记录共用启动时的 TIFF 清单，运行中新增的 TIFF 会在下次提取时纳入。
 提取会锁定同一 case。若进程在替换正式产物时退出，
-下次提取会在预检原始 TIFF 前恢复上一套已发布的文件。
+下次提取会在读取 YAML 和预检原始 TIFF 前恢复上一套已发布的文件。
 
 自动化可以在 `extract` 上加 `--jsonl`。stdout 每行是一个
 `extract-event/v1` 的 JSON 对象，依次报告 `start`、各阶段的 `progress`，
@@ -131,7 +131,7 @@ mask 及壁盘文件内容、检测参数、分片和实现版本区分。已完
 5 帧 prior 会把同一个粒子重复喂进径向拟合（检测阶段约 5 倍种子）。`detector.params.prior_dedupe`
 （默认 0 = 不去重）可以去掉模板峰若干像素内已覆盖的 prior 种子：300 真实帧配对实测 6 px 时
 检测 0.365 → 0.171 s/帧，代价是位置中位偏移 0.009 px、约 2% 帧计数 ±1。是否启用由项目决定，
-复核方式见 `tools/benchmark_prior_dedupe.py`。
+复核方式见 `tools/benchmark_prior_dedupe.py`，该脚本适用于 `wall_band=0` 的提取结果。
 
 产物在 `batch/sequences/case01/`：
 

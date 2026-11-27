@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from test_pipeline_synthetic import _make_case
-from vibrotrack import batch, case_output, pipeline
+from vibrotrack import batch, case_output, cli, pipeline
 from vibrotrack.config import ApparatusConfig, load_config
 
 
@@ -132,7 +132,8 @@ def test_case_lock_excludes_other_processes_and_release_after_exit(tmp_path):
     subprocess.run(command, check=True, timeout=15)
 
 
-def test_case_recovers_publication_after_process_exit_with_raw_offline(tmp_path):
+@pytest.mark.parametrize('yaml_offline', [False, True])
+def test_case_recovers_publication_after_process_exit_with_raw_offline(tmp_path, yaml_offline):
     case_dir = tmp_path / 'sequences' / 'syn'
     case_dir.mkdir(parents=True)
     old_data = {'dataset.json': 'previous manifest', 'chunk_00000_00005.npz': 'old chunk'}
@@ -163,13 +164,49 @@ with case_lock(case_dir), stage_case(case_dir) as new:
     with pytest.raises(RuntimeError, match='publication interrupted'):
         batch.build_index(tmp_path, allow_missing_geometry=True)
     offline = tmp_path / 'offline'
-    with pytest.raises(FileNotFoundError, match='raw frame directory not found'):
-        pipeline.run_case(offline, tmp_path, ApparatusConfig(), case_id='syn')
+    args = ['extract', '--raw', str(offline / 'frames'), '--out', str(tmp_path),
+            '--config', str(offline / 'apparatus.yaml')]
+
+    def extract(case_id):
+        if yaml_offline:
+            return cli.main([*args, '--case-id', case_id])
+        return pipeline.run_case(offline, tmp_path, ApparatusConfig(), case_id=case_id)
+
+    missing = 'apparatus config not found' if yaml_offline else 'raw frame directory not found'
+    with pytest.raises(FileNotFoundError, match=missing):
+        extract('syn')
     assert not (case_dir / 'chunk_00000_00003.npz').exists()
     assert not (case_dir / case_output.STAGE_NAME).exists()
     for name, value in old_data.items():
         assert (case_dir / name).read_text(encoding='utf8') == value
 
-    with pytest.raises(FileNotFoundError, match='raw frame directory not found'):
-        pipeline.run_case(offline, tmp_path, ApparatusConfig(), case_id='new')
+    with pytest.raises(FileNotFoundError, match=missing):
+        extract('new')
     assert not (tmp_path / 'sequences' / 'new').exists()
+
+
+@pytest.mark.parametrize('case_id', ['../outside', '', 'redirected'])
+def test_extract_rejects_invalid_case_before_offline_recovery(tmp_path, case_id):
+    outside = tmp_path / 'outside'
+    journal = outside / case_output.STAGE_NAME / 'prepared.json'
+    journal.parent.mkdir(parents=True)
+    journal.write_text('{}', encoding='utf-8')
+    args = ['extract', '--raw', str(tmp_path / 'offline' / 'frames'), '--out', str(tmp_path),
+            '--config', str(tmp_path / 'offline' / 'apparatus.yaml')]
+    sequences = tmp_path / 'sequences'
+    if case_id == 'redirected':
+        sequences.mkdir()
+        try:
+            (sequences / case_id).symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip('directory symlinks are unavailable')
+        message = 'case directory must not redirect'
+    else:
+        message = 'case_id must be a single directory name'
+
+    with pytest.raises(ValueError, match=message):
+        cli.main([*args, '--case-id', case_id])
+    assert list(outside.iterdir()) == [journal.parent]
+    assert journal.is_file()
+    if case_id != 'redirected':
+        assert not sequences.exists()

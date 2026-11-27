@@ -88,8 +88,9 @@ def _index_case(seq_dir, allow_missing_geometry):
         rec['summary_sha256'] = None
     geometry_path = seq_dir / 'geometry.json'
     if geometry_path.exists():
-        geom = schema.read_json(geometry_path)
-        rec['geometry_sha256'] = schema.sha256(geometry_path)
+        geometry_bytes = geometry_path.read_bytes()
+        geom = json.loads(geometry_bytes)
+        rec['geometry_sha256'] = hashlib.sha256(geometry_bytes).hexdigest()
         rec['geometry'] = {
             'centre_method': geom.get('centre_method'),
             'envelope_resid_rms_px': (geom.get('centre_quality') or {}).get('envelope_resid_rms_px'),
@@ -426,15 +427,18 @@ def archive(batch_dir, archive_root, force=False):
             'files': files,
         }
         schema.write_json(snapshot / 'FROZEN.json', frozen)
-        if dest.exists():
-            if not force:
-                raise FileExistsError('archive target already exists: %s (use --force to replace)' % dest)
-            dest.rename(previous)
         try:
+            if dest.exists():
+                if not force:
+                    raise FileExistsError('archive target already exists: %s (use --force to replace)' % dest)
+                dest.rename(previous)
             snapshot.rename(dest)
         except BaseException:
             if previous.exists():
                 try:
+                    if not snapshot.exists() and dest.exists():
+                        # The new rename completed before the interruption was delivered.
+                        dest.rename(snapshot)
                     previous.rename(dest)
                 except OSError as error:
                     raise RuntimeError(f'could not restore previous archive from {previous}') from error

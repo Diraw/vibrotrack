@@ -1,13 +1,16 @@
 """Benchmark tools use the cache generation named by extraction metadata."""
 
+from io import BytesIO
 import json
 from pathlib import Path
 import subprocess
 import sys
 
+import cv2
 import numpy as np
 import pytest
 import yaml
+from PIL import Image
 
 from test_pipeline_synthetic import _make_case
 from tools import benchmark_prior_dedupe, benchmark_sequential
@@ -61,8 +64,10 @@ def test_seed_loaders_select_current_or_legacy_cache(tmp_path, tool):
         loaded_x()
 
 
-@pytest.mark.parametrize('prior_mode', ['warmup', 'carry', 'off'])
-def test_benchmark_cli_reads_compatible_shards(tmp_path, prior_mode):
+@pytest.mark.parametrize(('prior_mode', 'wall_band'), [
+    ('warmup', 0), ('carry', 0), ('off', 0), ('warmup', 1),
+])
+def test_benchmark_cli_reads_compatible_shards(tmp_path, prior_mode, wall_band):
     frames, config = _make_case(tmp_path)
     out = tmp_path / 'batch'
     extract_args = [
@@ -75,12 +80,28 @@ def test_benchmark_cli_reads_compatible_shards(tmp_path, prior_mode):
         config.write_text(yaml.safe_dump(apparatus), encoding='utf8')
     if prior_mode == 'carry':
         extract_args += ['--prior-mode', 'carry']
+    if wall_band:
+        extract_args += ['--wall-band', str(wall_band), '--wall-model', 'empirical']
+        for path in frames.glob('*.tiff'):
+            with Image.open(BytesIO(path.read_bytes())) as image:
+                frame = np.array(image)
+            # The centre is 15 px outside the fixture's 320 px interior mask.
+            cv2.circle(frame, (400, 735), 37, 220 * 257, -1)
+            cv2.line(frame, (400, 735), (427, 717), 90 * 257, 5)
+            Image.fromarray(frame).save(path)
     assert cli.main(extract_args) == 0
     case = out / 'sequences' / 'synthetic'
     run_config = json.loads((case / 'run_config.json').read_text(encoding='utf8'))
     assert run_config['prior_mode'] == prior_mode
-    suffix = '_c' + run_config['detection_cache_digest'][:24]
-    assert list(case.glob(f'dets*{suffix}/det_*.npz'))
+    assert run_config['wall_band'] == wall_band
+    digest = run_config['detection_cache_digest']
+    suffix = '_c' + digest[:24]
+    cache_shards = sorted(case.glob(f'dets*{suffix}/det_*.npz'))
+    assert cache_shards
+    if wall_band:
+        with np.load(cache_shards[0], allow_pickle=False) as shard:
+            assert shard['_cache_digest'].item() == digest
+            assert shard['outside_mask'].any()
     if prior_mode == 'off':
         # Exercise an effective mode even when no legacy boolean is supplied.
         run_config.pop('prior', None)
@@ -98,10 +119,11 @@ def test_benchmark_cli_reads_compatible_shards(tmp_path, prior_mode):
             capture_output=True, text=True, encoding='utf8', errors='replace', timeout=60,
         )
         data = json.loads(report.read_text(encoding='utf8')) if report.exists() else {}
-        if prior_mode == 'off':
+        if prior_mode == 'off' or wall_band:
             assert result.returncode != 0
             error = data.get('error', {}).get('message', result.stderr)
-            assert 'rolling-prior regression requires prior enabled' in error
+            expected = 'wall_band=0' if wall_band else 'rolling-prior regression requires prior enabled'
+            assert expected in error
             continue
         assert result.returncode == 0, (result.stdout, result.stderr, data.get('error'))
         assert data['status'] == status, data.get('error')

@@ -91,6 +91,36 @@ def test_allow_missing_geometry_indexes_but_accept_refuses(tmp_path):
     assert any('geometry' in p for p in problems)
 
 
+def test_index_hashes_the_geometry_bytes_it_parsed(tmp_path, monkeypatch):
+    batch_dir = tmp_path / 'batch'
+    case = _write_case(batch_dir)
+    _write_geometry(case)
+    geometry_path = case / 'geometry.json'
+    original_hash = schema.sha256(geometry_path)
+    loads = json.loads
+    replaced = False
+
+    def parse_then_replace_geometry(data, *args, **kwargs):
+        nonlocal replaced
+        result = loads(data, *args, **kwargs)
+        if isinstance(result, dict) and result.get('schema') == 'geometry/v1' and not replaced:
+            schema.write_json(geometry_path, dict(result, phi=0.04))
+            replaced = True
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(json, 'loads', parse_then_replace_geometry)
+        record, = batch.build_index(batch_dir)['sequences']
+
+    assert replaced
+    assert record['geometry']['phi'] == 0.02
+    assert record['geometry_sha256'] == original_hash
+    assert schema.read_json(geometry_path)['phi'] == 0.04
+    report, _ = batch.verify(batch_dir)
+    assert not report['accepted']
+    assert 'geometry sha256' in report['sequences'][0]['problems'][0]
+
+
 def test_geometry_hash_is_part_of_the_gate(tmp_path):
     batch_dir = tmp_path / 'batch'
     case = _write_case(batch_dir)
@@ -154,6 +184,36 @@ def test_archive_force_preserves_old_copy_when_source_case_is_busy(tmp_path, int
             with pytest.raises(RuntimeError, match='another extraction or archive'):
                 batch.archive(batch_dir, archive_root, force=True)
     assert schema.read_json(previous) == {'generation': 'previous'}
+
+
+@pytest.mark.parametrize('interrupt_at', ['after_backup', 'before_install', 'after_install'])
+def test_archive_force_restores_after_interrupted_rename(tmp_path, monkeypatch, interrupt_at):
+    batch_dir = tmp_path / 'batch'
+    _write_case(batch_dir)
+    archive_root = tmp_path / 'archives'
+    dest = archive_root / batch_dir.name
+    schema.write_json(dest / 'FROZEN.json', {'generation': 'previous'})
+    (dest / 'old-product.txt').write_text('preserve me', encoding='utf8')
+    rename = Path.rename
+
+    def interrupt_rename(self, target):
+        is_install = self.name == 'snapshot' and Path(target) == dest
+        if interrupt_at == 'before_install' and is_install:
+            raise KeyboardInterrupt
+        result = rename(self, target)
+        if ((interrupt_at == 'after_backup' and self == dest and Path(target).name == 'previous')
+                or (interrupt_at == 'after_install' and is_install)):
+            raise KeyboardInterrupt
+        return result
+
+    monkeypatch.setattr(Path, 'rename', interrupt_rename)
+    with pytest.raises(KeyboardInterrupt):
+        batch.archive(batch_dir, archive_root, force=True)
+
+    assert schema.read_json(dest / 'FROZEN.json') == {'generation': 'previous'}
+    assert (dest / 'old-product.txt').read_text(encoding='utf8') == 'preserve me'
+    assert list(archive_root.iterdir()) == [dest]
+
 
 def test_index_locks_case_from_manifest_read_through_sidecar_hash(tmp_path, monkeypatch):
     batch_dir = tmp_path / 'batch'

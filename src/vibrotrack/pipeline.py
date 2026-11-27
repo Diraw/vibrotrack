@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -192,35 +193,43 @@ def detection_tasks(case, files, shard):
     return tasks
 
 
-def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, workers=None,
+def run_case(raw, out, config: ApparatusConfig | Callable[[], ApparatusConfig], *,
+             case_id, nframes=None, workers=None,
              shard=None, detector=None, linker=None, wall_band=None, wall_model=None,
              strict_io=None, no_link=False, limit_shards=0, dataset_id=None,
              project='', campaign='', acquired_at=None, operator=None, progress=print,
              events=None):
-    """Run one case and publish its dataset under out/sequences/<case_id>/."""
+    """Publish one case. A config loader runs after any existing case is recovered."""
     if limit_shards < 0:
         raise ValueError('limit_shards must be nonnegative')
     if Path(case_id).name != case_id or case_id in ('', '.', '..'):
         raise ValueError('case_id must be a single directory name')
     seq_root = Path(out).resolve() / 'sequences'
     case_dir = seq_root / case_id
+    if case_dir.resolve() != seq_root.resolve() / case_id:
+        raise ValueError('case directory must not redirect outside its expected path: %s' % case_dir)
     prepare_options = dict(case_id=case_id, nframes=nframes, workers=workers, shard=shard,
                            detector=detector, linker=linker, wall_band=wall_band,
                            wall_model=wall_model, strict_io=strict_io)
+
+    def prepare():
+        cfg = config() if callable(config) else config
+        return cfg, prepare_case(raw, seq_root, cfg, **prepare_options)
+
     t0 = time.time()
     prepared = None
     if not case_dir.exists():
         # A failed preflight for a fresh case does not need an output directory.
-        prepared = prepare_case(raw, seq_root, config, **prepare_options)
+        prepared = prepare()
     with case_lock(case_dir):
         recover_case(case_dir)
         if prepared is None:
-            prepared = prepare_case(raw, seq_root, config, **prepare_options)
-        case, files, workers, shard = prepared
+            prepared = prepare()
+        cfg, (case, files, workers, shard) = prepared
         progress('files: %d (%.2f s), shape=%s' % (len(files), time.time() - t0, case['shape']))
         D.prepare_detection_cache(case, files[:case['nframes']], shard_size=shard)
         return _run_prepared_case(
-            case, files, workers, shard, config, case_dir, no_link=no_link,
+            case, files, workers, shard, cfg, case_dir, no_link=no_link,
             limit_shards=limit_shards, dataset_id=dataset_id, project=project,
             campaign=campaign, acquired_at=acquired_at, operator=operator,
             progress=progress, events=events)
