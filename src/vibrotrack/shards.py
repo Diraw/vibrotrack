@@ -595,9 +595,9 @@ def drop_static_objects(payload, std_map, thresh=10.0, radius=25,
     return payload, int(bad.sum())
 
 
-def temporal_std(case, cid, n=60):
+def temporal_std(case, cid, n=60, *, source_files=None):
     """Mean per-pixel temporal std over the recording, cached next to the chunk."""
-    files = X.files_for(case)
+    files = X.files_for(case) if source_files is None else source_files
     if not files:
         return None
     indices = np.linspace(0, len(files) - 1, min(n, len(files))).astype(int)
@@ -641,7 +641,7 @@ def _sha1(path):
         return None
 
 
-def write_run_config(case, cid, model, *, output_dir=None):
+def write_run_config(case, cid, model, *, output_dir=None, source_files=None):
     """Everything needed to answer "which code, which settings, which data made this chunk".
 
     Written next to the chunk as run_config.json. The git commit is included because the
@@ -650,11 +650,11 @@ def write_run_config(case, cid, model, *, output_dir=None):
     import subprocess
     out = Path(output_dir) if output_dir is not None else out_root(case) / cid
     out.mkdir(parents=True, exist_ok=True)
-    files = []
-    try:
-        files = [str(f) for f in X.files_for(case)]
-    except Exception:
-        pass
+    if source_files is None:
+        try:
+            source_files = X.files_for(case)
+        except Exception:
+            source_files = ()
     mask, src = None, None
     try:
         _, src = load_mask(case.get('mask_path'), case.get('shape'))
@@ -686,13 +686,13 @@ def write_run_config(case, cid, model, *, output_dir=None):
         boundary=case.get('boundary'), mask=mask, mask_sha1=_sha1(mask) if mask else None,
         boundary_json_sha1=_sha1(Path(str(mask)).parent / 'boundary.json') if mask else None,
         wall_disks_sha1=_sha1(Path(str(mask)).parent / WALL_FILE) if mask else None,
-        n_input_files=len(files), first_file=files[0] if files else None,
-        last_file=files[-1] if files else None, git=git)
+        n_input_files=len(source_files), first_file=str(source_files[0]) if source_files else None,
+        last_file=str(source_files[-1]) if source_files else None, git=git)
     (out / 'run_config.json').write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding='utf8')
     return cfg
 
 
-def finish_link(case, state, *, output_dir=None):
+def finish_link(case, state, *, output_dir=None, source_files=None):
     cid = case['id']
     records = state['records']
     if not records:
@@ -704,7 +704,7 @@ def finish_link(case, state, *, output_dir=None):
         with case_lock(case_dir):
             recover_case(case_dir)
             with stage_case(case_dir) as staging:
-                return finish_link(case, state, output_dir=staging)
+                return finish_link(case, state, output_dir=staging, source_files=source_files)
     output_dir = Path(output_dir)
     fids = np.asarray(state['frame_ids'], dtype=np.int64)
     if len(fids) != len(records) or not np.all(np.diff(fids) == 1):
@@ -728,7 +728,7 @@ def finish_link(case, state, *, output_dir=None):
         # geometry branch: the discs are already excluded by the measured wall map, so the
         # statistical rule is not needed (kept available as an independent cross-check)
         if model == 'empirical' and case.get('wall_static_std', True):
-            std_map = temporal_std(case, cid)
+            std_map = temporal_std(case, cid, source_files=source_files)
             if std_map is not None:
                 payload, n_static = drop_static_objects(
                     payload, std_map, float(case.get('wall_static_thresh', 10.0)))
@@ -740,7 +740,7 @@ def finish_link(case, state, *, output_dir=None):
                 or len(offsets) != len(fids) + 1 or offsets[0] != 0
                 or np.any(np.diff(offsets) < 0) or offsets[-1] != len(payload['xy_px'])):
             raise ValueError(f'invalid frame indices in staged chunk: {dst}')
-    write_run_config(case, cid, model, output_dir=output_dir)
+    write_run_config(case, cid, model, output_dir=output_dir, source_files=source_files)
     # payload['frame_offsets'] was rebuilt by the wall drops; the local `offsets` is stale
     counts_per_frame = np.diff(payload['frame_offsets'])
     status = dict(case=cid, mode='full', status='completed', source_frame_count=len(fids),

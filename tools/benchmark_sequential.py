@@ -297,7 +297,7 @@ def run(args):
         dataset = json.loads(dataset_path.read_text(encoding='utf8'))
         if cfg.get('detector') != 'v2' or cfg.get('wall_model') != 'off' or cfg.get('wall_band'):
             raise ValueError('this deliberately narrow tool requires v2 + wall_model=off + wall_band=0')
-        if cfg.get('prior', True) is not True:
+        if cfg.get('prior_mode') == 'off' or cfg.get('prior', True) is not True:
             raise ValueError('rolling-prior regression requires prior enabled')
         windows = parse_windows(args.windows)
         prior_frames = max(1, int(cfg['prior_frames']))

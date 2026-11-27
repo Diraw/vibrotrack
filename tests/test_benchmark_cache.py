@@ -7,6 +7,7 @@ import sys
 
 import numpy as np
 import pytest
+import yaml
 
 from test_pipeline_synthetic import _make_case
 from tools import benchmark_prior_dedupe, benchmark_sequential
@@ -60,16 +61,30 @@ def test_seed_loaders_select_current_or_legacy_cache(tmp_path, tool):
         loaded_x()
 
 
-def test_benchmark_cli_reads_newly_extracted_shards(tmp_path):
+@pytest.mark.parametrize('prior_mode', ['warmup', 'carry', 'off'])
+def test_benchmark_cli_reads_compatible_shards(tmp_path, prior_mode):
     frames, config = _make_case(tmp_path)
     out = tmp_path / 'batch'
-    assert cli.main([
+    extract_args = [
         'extract', '--raw', str(frames), '--out', str(out), '--config', str(config),
         '--base-dir', str(tmp_path), '--case-id', 'synthetic', '--workers', '1',
-    ]) == 0
+    ]
+    if prior_mode == 'off':
+        apparatus = yaml.safe_load(config.read_text(encoding='utf8'))
+        apparatus['run']['prior'] = False
+        config.write_text(yaml.safe_dump(apparatus), encoding='utf8')
+    if prior_mode == 'carry':
+        extract_args += ['--prior-mode', 'carry']
+    assert cli.main(extract_args) == 0
     case = out / 'sequences' / 'synthetic'
     run_config = json.loads((case / 'run_config.json').read_text(encoding='utf8'))
+    assert run_config['prior_mode'] == prior_mode
     suffix = '_c' + run_config['detection_cache_digest'][:24]
+    assert list(case.glob(f'dets*{suffix}/det_*.npz'))
+    if prior_mode == 'off':
+        # Exercise an effective mode even when no legacy boolean is supplied.
+        run_config.pop('prior', None)
+        (case / 'run_config.json').write_text(json.dumps(run_config), encoding='utf8')
     mask = Path(run_config['mask'])
     for script, extra, status, source_field in (
         ('benchmark_prior_dedupe', [], 'ok', 'seed_sources'),
@@ -83,6 +98,11 @@ def test_benchmark_cli_reads_newly_extracted_shards(tmp_path):
             capture_output=True, text=True, encoding='utf8', errors='replace', timeout=60,
         )
         data = json.loads(report.read_text(encoding='utf8')) if report.exists() else {}
+        if prior_mode == 'off':
+            assert result.returncode != 0
+            error = data.get('error', {}).get('message', result.stderr)
+            assert 'rolling-prior regression requires prior enabled' in error
+            continue
         assert result.returncode == 0, (result.stdout, result.stderr, data.get('error'))
         assert data['status'] == status, data.get('error')
         assert data[source_field]

@@ -154,3 +154,143 @@ def test_archive_force_preserves_old_copy_when_source_case_is_busy(tmp_path, int
             with pytest.raises(RuntimeError, match='another extraction or archive'):
                 batch.archive(batch_dir, archive_root, force=True)
     assert schema.read_json(previous) == {'generation': 'previous'}
+
+def test_index_locks_case_from_manifest_read_through_sidecar_hash(tmp_path, monkeypatch):
+    batch_dir = tmp_path / 'batch'
+    case = _write_case(batch_dir)
+    _write_geometry(case)
+    manifest_path = case / 'dataset.json'
+    config_path = case / 'run_config.json'
+    old = schema.read_json(manifest_path)
+    schema.write_json(manifest_path, dict(old, dataset_id='before'))
+    read_json, sha256 = schema.read_json, schema.sha256
+    attempted_publications = []
+
+    def try_publish(stage):
+        attempted_publications.append(stage)
+        with pytest.raises(RuntimeError, match='another extraction or archive'):
+            with case_output.case_lock(case):
+                with case_output.stage_case(case) as incoming:
+                    schema.write_json(incoming / 'dataset.json', dict(old, dataset_id='after'))
+
+    def pause_after_manifest(path):
+        result = read_json(path)
+        if path == manifest_path:
+            try_publish('manifest')
+        return result
+
+    def pause_at_last_hash(path):
+        if path == config_path:
+            try_publish('config hash')
+        return sha256(path)
+
+    monkeypatch.setattr(schema, 'read_json', pause_after_manifest)
+    monkeypatch.setattr(schema, 'sha256', pause_at_last_hash)
+    record, = batch.build_index(batch_dir)['sequences']
+    assert attempted_publications == ['manifest', 'config hash']
+    assert record['dataset_id'] == 'before'
+    assert record['dataset_sha256'] == sha256(manifest_path)
+    assert record['npz_sha256'] == sha256(case / record['npz_file'])
+
+
+@pytest.mark.parametrize('force', [False, True])
+def test_archive_rejects_late_reindex_and_accept_without_replacing_destination(tmp_path, monkeypatch, force):
+    batch_dir = tmp_path / 'batch'
+    case = _write_case(batch_dir)
+    _write_geometry(case)
+    batch.build_index(batch_dir)
+    assert batch.accept(batch_dir)['accepted']
+
+    # Prepare the metadata a concurrent index/accept had already generated.
+    newer = tmp_path / 'newer'
+    for name in (case.name, 'late'):
+        _write_geometry(_write_case(newer, name=name))
+    new_index = batch.build_index(newer)
+    new_acceptance = batch.accept(newer)
+    assert new_acceptance['accepted']
+    archive_root = tmp_path / 'archives'
+    previous = archive_root / batch_dir.name / 'FROZEN.json'
+    if force:
+        schema.write_json(previous, {'generation': 'previous'})
+    copytree = batch.shutil.copytree
+
+    def interleave_copy(src, dest, *args, **kwargs):
+        if Path(src) == batch_dir:
+            _write_geometry(_write_case(batch_dir, name='late'))
+            schema.write_json(batch_dir / 'index.json', new_index)
+            schema.write_json(batch_dir / 'acceptance.json', new_acceptance)
+        return copytree(src, dest, *args, **kwargs)
+
+    monkeypatch.setattr(batch.shutil, 'copytree', interleave_copy)
+    with pytest.raises(ValueError, match='archive snapshot case set disagrees'):
+        batch.archive(batch_dir, archive_root, force=force)
+    if force:
+        assert schema.read_json(previous) == {'generation': 'previous'}
+    else:
+        assert not previous.parent.exists()
+    assert not list(archive_root.glob('.vibrotrack-archive-*'))
+
+
+@pytest.mark.parametrize('historical_mix', [False, True])
+def test_archive_rejects_stale_or_mixed_index(tmp_path, historical_mix):
+    batch_dir = tmp_path / 'batch'
+    case = _write_case(batch_dir)
+    _write_geometry(case)
+    manifest = case / 'dataset.json'
+    schema.write_json(manifest, dict(schema.read_json(manifest), dataset_id='old'))
+    index = batch.build_index(batch_dir)
+    assert batch.accept(batch_dir)['accepted']
+    diagnostic = 'hash disagrees'
+    if historical_mix:
+        schema.write_json(manifest, dict(schema.read_json(manifest), dataset_id='new'))
+        index['sequences'][0]['dataset_sha256'] = schema.sha256(manifest)
+        schema.write_json(batch_dir / 'index.json', index)
+        # Older acceptance reports did not record the index hash.
+        report = schema.read_json(batch_dir / 'acceptance.json')
+        del report['index_sha256']
+        schema.write_json(batch_dir / 'acceptance.json', report)
+        diagnostic = 'dataset ID disagrees'
+    else:
+        # Keep the ID stable so only the stale hash catches the old index.
+        schema.write_json(manifest, dict(schema.read_json(manifest), changed=True))
+
+    with pytest.raises(ValueError, match=diagnostic):
+        batch.archive(batch_dir, tmp_path / 'archives', force=True)
+
+
+def test_archive_force_allows_missing_index_and_acceptance(tmp_path):
+    batch_dir = tmp_path / 'batch'
+    case = _write_case(batch_dir)
+    dest, frozen = batch.archive(batch_dir, tmp_path / 'archives', force=True)
+
+    assert (dest / 'sequences' / case.name / 'dataset.json').exists()
+    assert not (dest / 'index.json').exists()
+    assert not (dest / 'acceptance.json').exists()
+    assert schema.read_json(dest / 'FROZEN.json') == frozen
+
+def test_archive_requires_acceptance_for_exact_index_bytes(tmp_path):
+    batch_dir = tmp_path / 'batch'
+    _write_geometry(_write_case(batch_dir))
+    index = batch.build_index(batch_dir)
+    report = batch.accept(batch_dir, min_angle=0.5)
+    assert report['accepted']
+    assert report['index_sha256'] == schema.sha256(batch_dir / 'index.json')
+    index['created_at'] = '2026-11-19T00:00:00+00:00'
+    schema.write_json(batch_dir / 'index.json', index)
+    archive_root = tmp_path / 'archives'
+    with pytest.raises(ValueError, match='index hash disagrees with acceptance.json'):
+        batch.archive(batch_dir, archive_root)
+
+    # Legacy reports remain valid when their case set and all product hashes agree.
+    del report['index_sha256']
+    schema.write_json(batch_dir / 'acceptance.json', report)
+    dest, _ = batch.archive(batch_dir, archive_root)
+    assert schema.read_json(dest / 'acceptance.json') == report
+
+
+def test_archive_refuses_destination_that_contains_the_source(tmp_path):
+    batch_dir = tmp_path / 'batch' / 'batch'
+    case = _write_case(batch_dir)
+    with pytest.raises(ValueError, match='outside the source'):
+        batch.archive(batch_dir, tmp_path, force=True)
+    assert (case / 'dataset.json').is_file()

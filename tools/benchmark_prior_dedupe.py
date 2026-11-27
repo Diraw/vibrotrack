@@ -125,7 +125,7 @@ def run(args):
     cfg = json.loads((case / 'run_config.json').read_text(encoding='utf8'))
     if cfg.get('detector') != 'v2':
         raise ValueError('this tool only covers detector v2')
-    if cfg.get('prior', True) is not True:
+    if cfg.get('prior_mode') == 'off' or cfg.get('prior', True) is not True:
         raise ValueError('rolling-prior regression requires prior enabled')
     mask_path = args.mask.resolve()
     if Path(cfg['mask']).resolve() != mask_path:

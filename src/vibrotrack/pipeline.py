@@ -161,7 +161,7 @@ def prepare_case(raw, seq_root, config: ApparatusConfig, *, case_id, nframes=Non
         particle_radius_px=float(config.radius_px),
     )
 
-    files = X.files_for(case)
+    files = tuple(X.files_for(case))
     n = min(int(nframes), len(files)) if nframes else len(files)
     if n <= 0:
         raise ValueError('no frames found in %s (extensions=%s)' % (raw, config.extensions))
@@ -204,14 +204,20 @@ def run_case(raw, out, config: ApparatusConfig, *, case_id, nframes=None, worker
         raise ValueError('case_id must be a single directory name')
     seq_root = Path(out).resolve() / 'sequences'
     case_dir = seq_root / case_id
+    prepare_options = dict(case_id=case_id, nframes=nframes, workers=workers, shard=shard,
+                           detector=detector, linker=linker, wall_band=wall_band,
+                           wall_model=wall_model, strict_io=strict_io)
     t0 = time.time()
-    case, files, workers, shard = prepare_case(
-        raw, seq_root, config, case_id=case_id, nframes=nframes, workers=workers,
-        shard=shard, detector=detector, linker=linker, wall_band=wall_band,
-        wall_model=wall_model, strict_io=strict_io)
-    progress('files: %d (%.2f s), shape=%s' % (len(files), time.time() - t0, case['shape']))
+    prepared = None
+    if not case_dir.exists():
+        # A failed preflight for a fresh case does not need an output directory.
+        prepared = prepare_case(raw, seq_root, config, **prepare_options)
     with case_lock(case_dir):
         recover_case(case_dir)
+        if prepared is None:
+            prepared = prepare_case(raw, seq_root, config, **prepare_options)
+        case, files, workers, shard = prepared
+        progress('files: %d (%.2f s), shape=%s' % (len(files), time.time() - t0, case['shape']))
         D.prepare_detection_cache(case, files[:case['nframes']], shard_size=shard)
         return _run_prepared_case(
             case, files, workers, shard, config, case_dir, no_link=no_link,
@@ -267,7 +273,7 @@ def _run_prepared_case(case, files, workers, shard, config, case_dir, *,
     with stage_case(case_dir) as staging:
         if link_state is not None:
             t1 = time.perf_counter()
-            status = D.finish_link(case, link_state, output_dir=staging)
+            status = D.finish_link(case, link_state, output_dir=staging, source_files=files)
             link_seconds += time.perf_counter() - t1
             progress('link: %.1f s measured %s' % (link_seconds, status))
         record = _write_dataset(case, config, staging, case_dir, dataset_id, project,

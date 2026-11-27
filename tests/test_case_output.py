@@ -1,14 +1,17 @@
 """Failed publication preserves the previous dataset, including across a hard exit."""
+import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from test_pipeline_synthetic import _make_case
 from vibrotrack import batch, case_output, pipeline
-from vibrotrack.config import load_config
+from vibrotrack.config import ApparatusConfig, load_config
 
 
 def _products(case_dir):
@@ -80,6 +83,41 @@ def test_extract_refuses_to_publish_when_an_earlier_frame_changes(tmp_path):
     assert _products(case_dir) == old
 
 
+def test_extract_uses_original_frame_list_for_provenance_and_wall_sampling(tmp_path, monkeypatch):
+    raw, config_path = _make_case(tmp_path)
+    config = load_config(config_path, base_dir=tmp_path)
+    config.wall_band = 1
+    config.wall_model = 'empirical'
+    original = sorted(raw.glob('*.tiff'))
+    added = raw / 'earlier.tiff'  # Filenames without numbers sort before frame_0000.
+    read_image = pipeline.X.read_image
+    post_detection_reads = []
+
+    def record_read(path, *args, **kwargs):
+        if added.exists():
+            post_detection_reads.append(Path(path))
+        return read_image(path, *args, **kwargs)
+
+    def add_frame_after_detection(event):
+        if event['stage'] == 'publish' and event['done'] == 0:
+            shutil.copyfile(original[-1], added)
+
+    monkeypatch.setattr(pipeline.X, 'read_image', record_read)
+    out = tmp_path / 'batch'
+    pipeline.run_case(raw, out, config, case_id='syn', nframes=4,
+                      events=add_frame_after_detection)
+    case_dir = out / 'sequences' / 'syn'
+    run_config = json.loads((case_dir / 'run_config.json').read_text(encoding='utf-8'))
+    chunk, = case_dir.glob('chunk_*.npz')
+    with np.load(chunk, allow_pickle=False) as product:
+        assert product['frame_ids'].tolist() == [0, 1, 2, 3]
+    assert run_config['nframes'] == 4
+    assert run_config['n_input_files'] == len(original)
+    assert run_config['first_file'] == str(original[0])
+    assert run_config['last_file'] == str(original[-1])
+    assert post_detection_reads == original
+
+
 def test_case_lock_excludes_other_processes_and_release_after_exit(tmp_path):
     command = [sys.executable, '-c',
                'import sys; from vibrotrack.case_output import case_lock\n'
@@ -94,7 +132,7 @@ def test_case_lock_excludes_other_processes_and_release_after_exit(tmp_path):
     subprocess.run(command, check=True, timeout=15)
 
 
-def test_case_recovers_publication_after_process_exit(tmp_path):
+def test_case_recovers_publication_after_process_exit_with_raw_offline(tmp_path):
     case_dir = tmp_path / 'sequences' / 'syn'
     case_dir.mkdir(parents=True)
     old_data = {'dataset.json': 'previous manifest', 'chunk_00000_00005.npz': 'old chunk'}
@@ -124,10 +162,14 @@ with case_lock(case_dir), stage_case(case_dir) as new:
     assert (case_dir / 'chunk_00000_00003.npz').exists()
     with pytest.raises(RuntimeError, match='publication interrupted'):
         batch.build_index(tmp_path, allow_missing_geometry=True)
-    with case_output.case_lock(case_dir):
-        case_output.recover_case(case_dir)
-        case_output.recover_case(case_dir)
+    offline = tmp_path / 'offline'
+    with pytest.raises(FileNotFoundError, match='raw frame directory not found'):
+        pipeline.run_case(offline, tmp_path, ApparatusConfig(), case_id='syn')
     assert not (case_dir / 'chunk_00000_00003.npz').exists()
     assert not (case_dir / case_output.STAGE_NAME).exists()
     for name, value in old_data.items():
         assert (case_dir / name).read_text(encoding='utf8') == value
+
+    with pytest.raises(FileNotFoundError, match='raw frame directory not found'):
+        pipeline.run_case(offline, tmp_path, ApparatusConfig(), case_id='new')
+    assert not (tmp_path / 'sequences' / 'new').exists()
